@@ -2,9 +2,13 @@
 
 ## Code Quality
 
-After every Python file edit, run Codacy analysis from the project root:
+After every Python file edit, run Ruff first, then Codacy analysis from the project root:
 
 ```bash
+# Format and auto-fix issues first
+uv run ruff format src tests
+uv run ruff check --fix src tests
+
 # Analyze a specific file
 .codacy/cli.sh analyze src/path/to/file.py
 
@@ -15,9 +19,9 @@ After every Python file edit, run Codacy analysis from the project root:
 .codacy/cli.sh analyze --tool trivy
 ```
 
-Always target `src/` or `tests/` — never the project root. `.venv/` and other non-source paths are excluded via `.codacy/codacy.yaml` and must never be analyzed.
+Always target `src/` or `tests/` for Ruff/Codacy — never the project root. `.venv/` and other non-source paths are excluded via `.codacy/codacy.yaml` and must never be analyzed.
 
-Fix all Pylint, Semgrep, and Lizard findings before finishing. Resolve HIGH/CRITICAL Trivy CVEs before adding any new dependency.
+Fix all Ruff, Pylint, Semgrep, and Lizard findings before finishing. Resolve HIGH/CRITICAL Trivy CVEs before adding any new dependency.
 
 ---
 

@@ -10,7 +10,21 @@ dependencies = [
 dev = [
     "dagster-webserver",
     "dagster-dg-cli",
+    "ruff>=0.11.0",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
 
 [build-system]
 requires = ["hatchling"]
