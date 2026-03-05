@@ -24,13 +24,14 @@ This project supports community organizations that share HSDS data by:
 
 ## Required local checks before PR review
 
-For Python changes, run Ruff and Codacy against the files you changed.
+For Python changes, run Ruff, Pyright, and Codacy against the files you changed.
 
 ### Ruff
 
 ```bash
 uv run ruff format src tests
 uv run ruff check --fix src tests
+uv run pyright
 ```
 
 ### Codacy CLI
@@ -60,7 +61,7 @@ If you are using an AI/agent workflow, you must follow [AGENTS.md](AGENTS.md).
 In particular:
 
 - respect skill routing and project conventions
-- run Ruff and Codacy on touched files
+- run Ruff, Pyright, and Codacy on touched files
 - resolve Pylint, Semgrep, and Lizard findings
 - resolve HIGH/CRITICAL Trivy CVEs before introducing new dependencies
 

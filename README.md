@@ -13,7 +13,9 @@ continual checks that support long-running community data sharing partnerships.
 ## Tooling
 
 - **Dagster (`dagster`, `dg`)**: pipeline orchestration, definitions, and local development UI
+- **Pydantic v2**: typed data models and validation for HSDS entities and pipeline I/O
 - **Ruff**: Python formatting and linting for fast local feedback
+- **Pyright**: static type checking for `src/` and `tests/`
 - **Codacy CLI (`.codacy/cli.sh`)**: static analysis and security scanning (Pylint, Semgrep,
   Lizard, Trivy)
 - **uv**: dependency and virtual environment management
