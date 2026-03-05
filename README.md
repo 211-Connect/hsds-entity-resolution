@@ -20,6 +20,20 @@ continual checks that support long-running community data sharing partnerships.
   Lizard, Trivy)
 - **uv**: dependency and virtual environment management
 
+## Component Package Layout
+
+Reusable Dagster components live in:
+
+- `src/hsds_entity_resolution/components/`
+
+The canonical public component entry point is:
+
+- `hsds_entity_resolution.components.EntityResolutionComponent`
+
+This module is exported through the Dagster registry entry-point group:
+
+- `dagster_dg_cli.registry_modules`
+
 ## Getting started
 
 ### Install dependencies
@@ -62,3 +76,19 @@ Then open [http://localhost:3000](http://localhost:3000).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for pull request requirements, quality checks, and review
 expectations.
+
+## Using This In Another Dagster Repo
+
+1. Publish or install this package (for example: `pip install hsds_entity_resolution`).
+2. Confirm discovery in the target environment:
+
+```bash
+dg list components --package hsds_entity_resolution
+```
+
+3. Use the component key in YAML:
+
+```yaml
+type: hsds_entity_resolution.components.EntityResolutionComponent
+attributes: {}
+```
