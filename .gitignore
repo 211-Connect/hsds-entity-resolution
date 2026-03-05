@@ -208,3 +208,7 @@ __marimo__/
 
 # Codacy
 .codacy/AGENTS.md
+
+AGENTS.md
+.codacy
+.dg/
