@@ -1,61 +1,62 @@
 # hsds_entity_resolution
 
+`hsds_entity_resolution` helps community organizations deduplicate HSDS data and orchestrate
+continual checks that support long-running community data sharing partnerships.
+
+## Project goals
+
+- Improve entity matching quality across partner-provided HSDS datasets
+- Reduce duplicate records that block trusted cross-organization coordination
+- Run repeatable validation and quality checks as data pipelines evolve
+- Support sustainable, long-term community data sharing operations
+
+## Tooling
+
+- **Dagster (`dagster`, `dg`)**: pipeline orchestration, definitions, and local development UI
+- **Ruff**: Python formatting and linting for fast local feedback
+- **Codacy CLI (`.codacy/cli.sh`)**: static analysis and security scanning (Pylint, Semgrep,
+  Lizard, Trivy)
+- **uv**: dependency and virtual environment management
+
 ## Getting started
 
-### Installing dependencies
+### Install dependencies
 
 **Option 1: uv**
 
-Ensure [`uv`](https://docs.astral.sh/uv/) is installed following their [official documentation](https://docs.astral.sh/uv/getting-started/installation/).
-
-Create a virtual environment, and install the required dependencies using _sync_:
+Ensure [`uv`](https://docs.astral.sh/uv/) is installed following the
+[official documentation](https://docs.astral.sh/uv/getting-started/installation/), then run:
 
 ```bash
 uv sync
 ```
 
-Then, activate the virtual environment:
+Activate the virtual environment:
 
 | OS | Command |
 | --- | --- |
-| MacOS | ```source .venv/bin/activate``` |
-| Windows | ```.venv\Scripts\activate``` |
+| MacOS | `source .venv/bin/activate` |
+| Windows | `.venv\Scripts\activate` |
 
 **Option 2: pip**
 
-Install the python dependencies with [pip](https://pypi.org/project/pip/):
-
 ```bash
 python3 -m venv .venv
-```
-
-Then activate the virtual environment:
-
-| OS | Command |
-| --- | --- |
-| MacOS | ```source .venv/bin/activate``` |
-| Windows | ```.venv\Scripts\activate``` |
-
-Install the required dependencies:
-
-```bash
+source .venv/bin/activate  # MacOS
 pip install -e ".[dev]"
 ```
 
-### Running Dagster
+### Run the project
 
-Start the Dagster UI web server:
+Start Dagster locally:
 
 ```bash
 dg dev
 ```
 
-Open http://localhost:3000 in your browser to see the project.
+Then open [http://localhost:3000](http://localhost:3000).
 
-## Learn more
+## Contributing
 
-To learn more about this template and Dagster in general:
-
-- [Dagster Documentation](https://docs.dagster.io/)
-- [Dagster University](https://courses.dagster.io/)
-- [Dagster Slack Community](https://dagster.io/slack)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for pull request requirements, quality checks, and review
+expectations.
