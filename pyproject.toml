@@ -52,8 +52,8 @@ directory_type = "project"
 [tool.dg.project]
 root_module = "hsds_entity_resolution"
 registry_modules = [
-    "hsds_entity_resolution.components.*",
+    "hsds_entity_resolution.dagster.components.*",
 ]
 
 [project.entry-points."dagster_dg_cli.registry_modules"]
-hsds_entity_resolution = "hsds_entity_resolution.components"
+hsds_entity_resolution = "hsds_entity_resolution.dagster.components"

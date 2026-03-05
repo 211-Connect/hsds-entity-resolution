@@ -24,11 +24,17 @@ continual checks that support long-running community data sharing partnerships.
 
 Reusable Dagster components live in:
 
-- `src/hsds_entity_resolution/components/`
+- `src/hsds_entity_resolution/dagster/components/`
+
+Core library code should live outside the Dagster adapter layer:
+
+- `src/hsds_entity_resolution/core/`
+- `src/hsds_entity_resolution/types/`
+- `src/hsds_entity_resolution/config/`
 
 The canonical public component entry point is:
 
-- `hsds_entity_resolution.components.EntityResolutionComponent`
+- `hsds_entity_resolution.dagster.components.EntityResolutionComponent`
 
 This module is exported through the Dagster registry entry-point group:
 
@@ -89,6 +95,6 @@ dg list components --package hsds_entity_resolution
 3. Use the component key in YAML:
 
 ```yaml
-type: hsds_entity_resolution.components.EntityResolutionComponent
+type: hsds_entity_resolution.dagster.components.EntityResolutionComponent
 attributes: {}
 ```
