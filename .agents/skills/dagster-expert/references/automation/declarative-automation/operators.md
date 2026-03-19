@@ -1,3 +1,9 @@
+---
+title: Operators
+triggers:
+  - "combining conditions using since, any_deps_match, or boolean operators"
+---
+
 # Declarative Automation: Operators
 
 Operators combine operands and other conditions into complex expressions using boolean logic and transformations.

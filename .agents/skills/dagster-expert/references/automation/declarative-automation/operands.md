@@ -1,3 +1,9 @@
+---
+title: Operands
+triggers:
+  - "base condition building blocks like missing() or newly_updated()"
+---
+
 # Declarative Automation: Operands
 
 Operands are base conditions that evaluate to true or false for a given asset or asset partition. They represent fundamental states and events.

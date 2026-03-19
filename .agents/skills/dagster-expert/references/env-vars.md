@@ -1,3 +1,9 @@
+---
+title: Environment Variables
+triggers:
+  - "configuring environment variables across different environments"
+---
+
 # Environment Variables Reference
 
 ## Overview
@@ -114,5 +120,5 @@ dg launch --env-file .env.prod --assets my_asset
 
 ## References
 
-- [CLI list reference](./cli/list.md) - `dg list envs` and other commands
+- [CLI list envs reference](./cli/list/envs.md) - `dg list envs` command
 - [Dagster EnvVar API](https://docs.dagster.io/api/dagster/dagster.EnvVar)

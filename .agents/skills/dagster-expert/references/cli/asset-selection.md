@@ -1,44 +1,40 @@
-# Asset Selection Syntax
+---
+title: Asset Selection Syntax
+triggers:
+  - "filtering assets by tag, group, kind, upstream, or downstream"
+---
 
 Reference for the asset selection syntax used by `dg list defs --assets` and `dg launch --assets`.
 
 ## Attributes
 
-| Attribute | Syntax                             | Example                        |
-| --------- | ---------------------------------- | ------------------------------ |
-| `key`     | `key:<name>` or `<name>`           | `key:customers` or `customers` |
-| `tag`     | `tag:<key>=<value>` or `tag:<key>` | `tag:priority=high`            |
-| `owner`   | `owner:<value>`                    | `owner:team@company.com`       |
-| `group`   | `group:<value>`                    | `group:sales_analytics`        |
-| `kind`    | `kind:<value>`                     | `kind:dbt`                     |
+- `key:<name>` or just `<name>` — select by asset key (e.g. `customers`)
+- `tag:<key>=<value>` or `tag:<key>` — select by tag (e.g. `tag:priority=high`)
+- `owner:<value>` — select by owner (e.g. `owner:team@company.com`)
+- `group:<value>` — select by group (e.g. `group:sales_analytics`)
+- `kind:<value>` — select by kind (e.g. `kind:dbt`)
 
 **Wildcards:** `key:customer*`, `key:*_raw`, `*` (all assets)
 
 ## Operators
 
-| Operator | Syntax        | Example                                           |
-| -------- | ------------- | ------------------------------------------------- |
-| AND      | `and` / `AND` | `tag:priority=high and kind:dbt`                  |
-| OR       | `or` / `OR`   | `group:sales or group:marketing`                  |
-| NOT      | `not` / `NOT` | `not kind:dbt`                                    |
-| Grouping | `(expr)`      | `tag:priority=high and (kind:dbt or kind:python)` |
+- `and` / `AND` — e.g. `tag:priority=high and kind:dbt`
+- `or` / `OR` — e.g. `group:sales or group:marketing`
+- `not` / `NOT` — e.g. `not kind:dbt`
+- `(expr)` — grouping, e.g. `tag:priority=high and (kind:dbt or kind:python)`
 
 ## Functions
 
-| Function      | Description                          | Example                  |
-| ------------- | ------------------------------------ | ------------------------ |
-| `sinks(expr)` | Assets with no downstream dependents | `sinks(group:analytics)` |
-| `roots(expr)` | Assets with no upstream dependencies | `roots(kind:dbt)`        |
+- `sinks(expr)` — assets with no downstream dependents (e.g. `sinks(group:analytics)`)
+- `roots(expr)` — assets with no upstream dependencies (e.g. `roots(kind:dbt)`)
 
 ## Traversals
 
-| Syntax        | Description               | Example           |
-| ------------- | ------------------------- | ----------------- |
-| `+asset`      | All upstream dependencies | `+customers`      |
-| `asset+`      | All downstream dependents | `customers+`      |
-| `+N asset`    | N levels upstream         | `+2 customers`    |
-| `asset N+`    | N levels downstream       | `customers 2+`    |
-| `+N asset M+` | N up, M down              | `+1 customers 2+` |
+- `+expr` — all upstream dependencies (e.g. `+customers`)
+- `expr+` — all downstream dependents (e.g. `customers+`)
+- `N+expr` — N levels upstream (e.g. `2+kind:dbt`)
+- `expr+N` — N levels downstream (e.g. `group:sales+1`)
+- `N+expr+M` — N up, M down (e.g. `1+key:customers+2`)
 
 ## Examples
 
@@ -59,24 +55,12 @@ dg launch --assets "group:sales or group:marketing"
 dg launch --assets "not kind:dbt"
 
 # With traversals
-dg launch --assets "+customers"           # customers + all upstream
-dg launch --assets "customers+"           # customers + all downstream
-dg launch --assets "+2 customers"         # customers + 2 levels upstream
-dg launch --assets "+customers 1+"        # all upstream + 1 level downstream
+dg launch --assets "+kind:dbt"            # all upstream of dbt assets
+dg launch --assets "group:sales+"         # group:sales + all downstream
+dg launch --assets "2+key:customers"      # customers + 2 levels upstream
+dg launch --assets "kind:python+1"        # kind:python + 1 level downstream
 
 # With functions
 dg launch --assets "sinks(group:analytics)"  # terminal assets in group
 dg launch --assets "roots(kind:dbt)"         # source dbt assets
 ```
-
-## Preview Before Launch
-
-```bash
-# Verify selection before materializing
-dg list defs --assets "tag:priority=high and kind:dbt"
-```
-
-## See Also
-
-- [launch.md](./launch.md) - Materialize assets
-- [list.md](./list.md) - List definitions with asset filtering

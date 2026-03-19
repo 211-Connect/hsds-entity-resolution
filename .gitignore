@@ -191,6 +191,9 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+.uv-cache/
+.cursor/
+
 # PyPI configuration file
 .pypirc
 
@@ -209,4 +212,15 @@ __marimo__/
 # Codacy
 .codacy/AGENTS.md
 
+# dbt — target/ contains per-run artifacts; never commit.
+consumer/dbt/target/
+hsds_dbt_macros/target/
+
 .dg/
+
+consumer/
+hsds_dbt_macros/
+scripts/
+
+HSDS_DATA_MODEL.md
+_hsds_table_desc/

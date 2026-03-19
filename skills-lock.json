@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "skills": {
+    "dagster-expert": {
+      "source": "dagster-io/skills",
+      "sourceType": "github",
+      "computedHash": "cffa507fa2ab86803f81e80c4f7e454b80fcf1ba8f4d12580638ae6f2dd7fa4a"
+    },
+    "dignified-python": {
+      "source": "dagster-io/skills",
+      "sourceType": "github",
+      "computedHash": "522e3f4f33436966a478f8ce94140439981392a91d661cf90b6035f6ebc1e35a"
+    },
+    "pytest-patterns": {
+      "source": "manutej/luxor-claude-marketplace",
+      "sourceType": "github",
+      "computedHash": "730a64a00c96e7956bbc4228423ba38fa7797079b410970577e87b27a5348c85"
+    },
+    "python-comments": {
+      "source": "acaprino/alfio-claude-plugins",
+      "sourceType": "github",
+      "computedHash": "d72685adad0aa06032617a6ce703ee691eedbfa3319bfe4d4a30b1b077b1656b"
+    }
+  }
+}
