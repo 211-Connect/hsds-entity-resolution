@@ -16,6 +16,13 @@ from hsds_entity_resolution.core.dataframe_utils import (
 from hsds_entity_resolution.core.evidence_policy import count_contributing_reasons
 from hsds_entity_resolution.core.pair_tiering import is_review_eligible_score
 from hsds_entity_resolution.types.contracts import ApplyMitigationResult
+from hsds_entity_resolution.types.frames import (
+    FINALIZED_PAIRS_SCHEMA,
+    MITIGATION_EVENTS_SCHEMA,
+    PAIR_ID_REMAP_SCHEMA,
+    PAIR_STATE_INDEX_SCHEMA,
+    REMOVED_PAIR_IDS_SCHEMA,
+)
 
 
 def apply_mitigation(
@@ -80,9 +87,9 @@ def apply_mitigation(
         removed_entities=removed_entities,
         config=config,
     )
-    finalized = frame_with_schema(finalized_rows, _FINALIZED_PAIRS_SCHEMA)
-    mitigation_events = frame_with_schema(mitigation_rows, _MITIGATION_EVENTS_SCHEMA)
-    removed_pair_ids = frame_with_schema(removed_pair_rows, _REMOVED_PAIR_IDS_SCHEMA)
+    finalized = frame_with_schema(finalized_rows, FINALIZED_PAIRS_SCHEMA)
+    mitigation_events = frame_with_schema(mitigation_rows, MITIGATION_EVENTS_SCHEMA)
+    removed_pair_ids = frame_with_schema(removed_pair_rows, REMOVED_PAIR_IDS_SCHEMA)
     pair_state_index = _build_pair_state_index(finalized_scored_pairs=finalized, config=config)
     return ApplyMitigationResult(
         finalized_scored_pairs=finalized,
@@ -236,72 +243,29 @@ def _needs_mitigation(*, row: dict[str, Any], config: EntityResolutionRunConfig)
     return int(row["reason_count"]) < config.scoring.min_reason_count_for_keep
 
 
-_FINALIZED_PAIRS_SCHEMA: dict[str, Any] = {
-    "pair_key": pl.String,
-    "entity_a_id": pl.String,
-    "entity_b_id": pl.String,
-    "entity_type": pl.String,
-    "policy_version": pl.String,
-    "model_version": pl.String,
-    "deterministic_section_score": pl.Float64,
-    "nlp_section_score": pl.Float64,
-    "ml_section_score": pl.Float64,
-    "final_score": pl.Float64,
-    "predicted_duplicate": pl.Boolean,
-    "pair_outcome": pl.String,
-    "review_eligible": pl.Boolean,
-    "embedding_similarity": pl.Float64,
-    "mitigation_reason": pl.String,
-}
-
-_MITIGATION_EVENTS_SCHEMA: dict[str, Any] = {
-    "pair_key": pl.String,
-    "mitigation_reason": pl.String,
-    "evidence": pl.Struct({"embedding_similarity": pl.Float64, "reason_count": pl.Int64}),
-    "pre_mitigation_prediction": pl.Boolean,
-    "post_mitigation_prediction": pl.Boolean,
-}
-
-_REMOVED_PAIR_IDS_SCHEMA: dict[str, Any] = {
-    "pair_key": pl.String,
-    "cleanup_reason": pl.String,
-}
-
-
 def _empty_finalized_pairs_frame() -> pl.DataFrame:
     """Return canonical empty finalized score frame."""
-    return pl.DataFrame(schema=_FINALIZED_PAIRS_SCHEMA)
+    return pl.DataFrame(schema=FINALIZED_PAIRS_SCHEMA)
 
 
 def _empty_mitigation_events_frame() -> pl.DataFrame:
     """Return canonical empty mitigation-events frame."""
-    return pl.DataFrame(schema=_MITIGATION_EVENTS_SCHEMA)
+    return pl.DataFrame(schema=MITIGATION_EVENTS_SCHEMA)
 
 
 def _empty_removed_pair_ids_frame() -> pl.DataFrame:
     """Return canonical empty removed-pair artifact."""
-    return pl.DataFrame(schema=_REMOVED_PAIR_IDS_SCHEMA)
+    return pl.DataFrame(schema=REMOVED_PAIR_IDS_SCHEMA)
 
 
 def _empty_pair_id_remap_frame() -> pl.DataFrame:
     """Return canonical empty pair-id-remap artifact."""
-    return pl.DataFrame(
-        schema={"old_pair_key": pl.String, "new_pair_key": pl.String, "reason": pl.String}
-    )
+    return pl.DataFrame(schema=PAIR_ID_REMAP_SCHEMA)
 
 
 def _empty_pair_state_index_frame() -> pl.DataFrame:
     """Return canonical empty pair-state index."""
-    return pl.DataFrame(
-        schema={
-            "pair_key": pl.String,
-            "entity_a_id": pl.String,
-            "entity_b_id": pl.String,
-            "entity_type": pl.String,
-            "scope_id": pl.String,
-            "retained_flag": pl.Boolean,
-        }
-    )
+    return pl.DataFrame(schema=PAIR_STATE_INDEX_SCHEMA)
 
 
 def _build_pair_state_index(
@@ -412,7 +376,7 @@ def _removed_pairs_from_previous_only(
             else "candidate_lost"
         )
         rows.append({"pair_key": pair_key, "cleanup_reason": reason})
-    return frame_with_schema(rows, _REMOVED_PAIR_IDS_SCHEMA)
+    return frame_with_schema(rows, REMOVED_PAIR_IDS_SCHEMA)
 
 
 def _removed_pairs_for_scope_removed(*, previous_pair_state: pl.DataFrame) -> pl.DataFrame:
@@ -427,7 +391,7 @@ def _removed_pairs_for_scope_removed(*, previous_pair_state: pl.DataFrame) -> pl
     rows = [
         {"pair_key": pair_key, "cleanup_reason": "scope_removed"} for pair_key in retained_pairs
     ]
-    return frame_with_schema(rows, _REMOVED_PAIR_IDS_SCHEMA)
+    return frame_with_schema(rows, REMOVED_PAIR_IDS_SCHEMA)
 
 
 def _preserve_pair_state_for_no_change(

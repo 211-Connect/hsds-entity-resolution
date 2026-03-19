@@ -171,7 +171,19 @@ class EntityResolutionComponent(dg.Component, dg.Model, dg.Resolvable):
 
 
 def _ensure_frame(value: Any) -> pl.DataFrame | pl.LazyFrame:
-    """Coerce supported runtime payloads to Polars frame types."""
+    """Coerce supported runtime payloads to Polars frame types.
+
+    The ``list`` branch deliberately uses schema inference: this function is
+    called for four different asset inputs (org entities, service entities,
+    previous entity index, previous pair state index), each with a different
+    schema, so no single explicit schema can be supplied here.  In practice,
+    Dagster always delivers these as ``pl.DataFrame`` objects; the ``list``
+    branch is a generic escape hatch for ad-hoc testing.
+
+    The ``None`` branch returns a zero-column empty frame; downstream stages
+    call ``ensure_columns`` to add the columns they require before accessing
+    any data.
+    """
     if isinstance(value, (pl.DataFrame, pl.LazyFrame)):
         return value
     if isinstance(value, list):

@@ -9,7 +9,7 @@ candidate generation and scoring.
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import cast
 
 import polars as pl
 from dagster import get_dagster_logger
@@ -30,6 +30,7 @@ from hsds_entity_resolution.core.taxonomy_utils import (
 from hsds_entity_resolution.observability import FrameTracer, IncrementalProgressLogger
 from hsds_entity_resolution.types.contracts import CleanEntitiesResult
 from hsds_entity_resolution.types.domain import EntityType
+from hsds_entity_resolution.types.frames import CLEAN_ENTITY_SCHEMA
 from hsds_entity_resolution.types.rows import (
     CleanEntityRow,
     CleanPayloadValues,
@@ -69,44 +70,6 @@ _SERVICE_PAYLOAD_COLUMNS = [
 # values are returned as-is by to_dicts(), which is what downstream stages
 # (generate_candidates, score_candidates) rely on.
 _NESTED_LIST_COLUMNS = {"locations", "taxonomies", "identifiers", "services_rollup"}
-
-_CLEAN_ENTITY_SCHEMA: dict[str, Any] = {
-    "entity_id": pl.String,
-    "entity_type": pl.String,
-    "source_schema": pl.String,
-    "embedding_vector": pl.List(pl.Float64),
-    "content_hash": pl.String,
-    "name": pl.String,
-    "description": pl.String,
-    "emails": pl.List(pl.String),
-    "phones": pl.List(pl.String),
-    "websites": pl.List(pl.String),
-    "locations": pl.Object,
-    "taxonomies": pl.Object,
-    "identifiers": pl.Object,
-    "services_rollup": pl.Object,
-    "organization_name": pl.String,
-    "organization_id": pl.String,
-    # Display-quality passthrough fields: original casing, passed through unchanged.
-    "display_name": pl.String,
-    "display_description": pl.String,
-    "alternate_name": pl.String,
-    "short_description": pl.String,
-    "application_process": pl.String,
-    "fees_description": pl.String,
-    "eligibility_description": pl.String,
-    "resource_writer_name": pl.String,
-    "assured_date": pl.String,
-    "assurer_email": pl.String,
-    "original_id": pl.String,
-}
-
-_ENTITY_INDEX_SCHEMA: dict[str, Any] = {
-    "entity_id": pl.String,
-    "entity_type": pl.String,
-    "content_hash": pl.String,
-    "active_flag": pl.Boolean,
-}
 
 
 def clean_entities(
@@ -204,7 +167,7 @@ def _clean_entity_frame(
             stage=stage_name,
             detail={"clean_rows": len(clean_rows)},
         )
-    clean_frame = frame_with_schema(clean_rows, _CLEAN_ENTITY_SCHEMA)
+    clean_frame = frame_with_schema(clean_rows, CLEAN_ENTITY_SCHEMA)
     validated_frame = _validate_embedding_column(frame=clean_frame, strict=strict)
     _log_clean_sample(rows=clean_rows, entity_type=entity_type)
     return validated_frame
@@ -382,7 +345,9 @@ def _validate_embedding_column(*, frame: pl.DataFrame, strict: bool) -> pl.DataF
     max_len = max(lengths)
     # Non-strict mode pads shorter vectors to maintain consistent matrix dimensions.
     padded = [vector + [0.0] * (max_len - len(vector)) for vector in vectors]
-    return frame.with_columns(pl.Series(name="embedding_vector", values=padded))
+    return frame.with_columns(
+        pl.Series(name="embedding_vector", values=padded, dtype=pl.List(pl.Float64))
+    )
 
 
 def _build_entity_index(*, organization_df: pl.DataFrame, service_df: pl.DataFrame) -> pl.DataFrame:
@@ -461,4 +426,4 @@ def _build_delta_summary(
 
 def _empty_clean_entity_frame() -> pl.DataFrame:
     """Return canonical empty cleaned entity frame."""
-    return pl.DataFrame(schema=_CLEAN_ENTITY_SCHEMA)
+    return pl.DataFrame(schema=CLEAN_ENTITY_SCHEMA)

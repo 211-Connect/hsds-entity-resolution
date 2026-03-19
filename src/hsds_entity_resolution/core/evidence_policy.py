@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import polars as pl
 
+from hsds_entity_resolution.types.frames import CONTRIBUTING_REASONS_SCHEMA
+
 EVIDENCE_POLICY_NAME = "weighted_contribution_positive"
 
 
@@ -25,7 +27,7 @@ def count_contributing_reasons(*, pair_reasons: pl.DataFrame) -> pl.DataFrame:
     """Return per-pair contributing reason counts under the shared policy."""
     required_columns = {"pair_key", "weighted_contribution"}
     if pair_reasons.is_empty() or not required_columns.issubset(pair_reasons.columns):
-        return pl.DataFrame(schema={"pair_key": pl.String, "reason_count": pl.Int64})
+        return pl.DataFrame(schema=CONTRIBUTING_REASONS_SCHEMA)
     return (
         pair_reasons.filter(contributing_evidence_filter())
         .group_by("pair_key")

@@ -25,6 +25,7 @@ from hsds_entity_resolution.core.pair_tiering import (
 )
 from hsds_entity_resolution.observability import IncrementalProgressLogger
 from hsds_entity_resolution.types.contracts import ScoreCandidatesResult
+from hsds_entity_resolution.types.frames import PAIR_REASONS_SCHEMA, SCORED_PAIRS_SCHEMA
 
 
 @dataclass(frozen=True)
@@ -109,11 +110,9 @@ def score_candidates(
             stage="score_candidates.finalize_pairs",
             detail={"pairs": len(scored_records)},
         )
-    scored_pairs = frame_with_schema(
-        [record.row for record in scored_records], _SCORED_PAIRS_SCHEMA
-    )
+    scored_pairs = frame_with_schema([record.row for record in scored_records], SCORED_PAIRS_SCHEMA)
     reason_rows = [reason for record in scored_records for reason in record.reasons]
-    pair_reasons = frame_with_schema(reason_rows, _PAIR_REASONS_SCHEMA)
+    pair_reasons = frame_with_schema(reason_rows, PAIR_REASONS_SCHEMA)
     _log_signal_band_diagnostics(
         scored_pairs=scored_pairs, pair_reasons=pair_reasons, config=config
     )
@@ -785,39 +784,11 @@ def _empty_result() -> ScoreCandidatesResult:
     )
 
 
-_SCORED_PAIRS_SCHEMA: dict[str, Any] = {
-    "pair_key": pl.String,
-    "entity_a_id": pl.String,
-    "entity_b_id": pl.String,
-    "source_schema_a": pl.String,
-    "source_schema_b": pl.String,
-    "entity_type": pl.String,
-    "policy_version": pl.String,
-    "model_version": pl.String,
-    "deterministic_section_score": pl.Float64,
-    "nlp_section_score": pl.Float64,
-    "ml_section_score": pl.Float64,
-    "final_score": pl.Float64,
-    "predicted_duplicate": pl.Boolean,
-    "pair_outcome": pl.String,
-    "review_eligible": pl.Boolean,
-    "embedding_similarity": pl.Float64,
-}
-
-_PAIR_REASONS_SCHEMA: dict[str, Any] = {
-    "pair_key": pl.String,
-    "match_type": pl.String,
-    "raw_contribution": pl.Float64,
-    "weighted_contribution": pl.Float64,
-    "signal_weight": pl.Float64,
-}
-
-
 def _empty_scored_pairs_frame() -> pl.DataFrame:
     """Return canonical empty scored-pairs frame."""
-    return pl.DataFrame(schema=_SCORED_PAIRS_SCHEMA)
+    return pl.DataFrame(schema=SCORED_PAIRS_SCHEMA)
 
 
 def _empty_reasons_frame() -> pl.DataFrame:
     """Return canonical empty pair-reasons frame."""
-    return pl.DataFrame(schema=_PAIR_REASONS_SCHEMA)
+    return pl.DataFrame(schema=PAIR_REASONS_SCHEMA)

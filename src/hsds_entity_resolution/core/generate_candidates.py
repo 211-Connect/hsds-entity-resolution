@@ -10,11 +10,16 @@ import polars as pl
 from dagster import get_dagster_logger
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
-from hsds_entity_resolution.core.dataframe_utils import clean_string_list, clean_text_scalar
+from hsds_entity_resolution.core.dataframe_utils import (
+    clean_string_list,
+    clean_text_scalar,
+    frame_with_schema,
+)
 from hsds_entity_resolution.core.domain_utils import extract_contact_domains
 from hsds_entity_resolution.core.taxonomy_utils import extract_entity_taxonomy_codes
 from hsds_entity_resolution.observability import IncrementalProgressLogger
 from hsds_entity_resolution.types.contracts import GenerateCandidatesResult
+from hsds_entity_resolution.types.frames import CANDIDATE_PAIR_SCHEMA
 
 OverlapEvaluator = Callable[[dict[str, Any], dict[str, Any]], bool]
 
@@ -107,7 +112,9 @@ def _generate_for_entity_type(
     )
     if not pair_records:
         return _empty_candidate_frame()
-    return pl.DataFrame(pair_records).sort(["entity_a_id", "entity_b_id"])
+    return frame_with_schema(pair_records, CANDIDATE_PAIR_SCHEMA).sort(
+        ["entity_a_id", "entity_b_id"]
+    )
 
 
 def _collect_candidate_records(
@@ -478,15 +485,4 @@ def _empty_result() -> GenerateCandidatesResult:
 
 def _empty_candidate_frame() -> pl.DataFrame:
     """Return canonical empty candidate-pairs frame."""
-    return pl.DataFrame(
-        schema={
-            "pair_key": pl.String,
-            "entity_a_id": pl.String,
-            "entity_b_id": pl.String,
-            "entity_type": pl.String,
-            "embedding_similarity": pl.Float64,
-            "candidate_reason_codes": pl.List(pl.String),
-            "source_schema_a": pl.String,
-            "source_schema_b": pl.String,
-        }
-    )
+    return pl.DataFrame(schema=CANDIDATE_PAIR_SCHEMA)

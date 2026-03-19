@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any
 
 import polars as pl
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.dataframe_utils import frame_with_schema, to_dataframe
 from hsds_entity_resolution.types.contracts import ClusterPairsResult
+from hsds_entity_resolution.types.frames import CLUSTER_PAIRS_SCHEMA, CLUSTERS_SCHEMA
 
 _EPSILON = 1e-12
 
@@ -124,8 +124,8 @@ def cluster_pairs(
         algorithm=config.clustering.algorithm,
     )
     return ClusterPairsResult(
-        clusters=frame_with_schema(cluster_rows, _CLUSTERS_SCHEMA),
-        cluster_pairs=frame_with_schema(cluster_pair_rows, _CLUSTER_PAIRS_SCHEMA),
+        clusters=frame_with_schema(cluster_rows, CLUSTERS_SCHEMA),
+        cluster_pairs=frame_with_schema(cluster_pair_rows, CLUSTER_PAIRS_SCHEMA),
     )
 
 
@@ -361,36 +361,11 @@ def _safe_float(value: object) -> float | None:
     return None
 
 
-_CLUSTERS_SCHEMA: dict[str, Any] = {
-    "cluster_id": pl.String,
-    "entity_type": pl.String,
-    "cluster_size": pl.Int64,
-    "pair_count": pl.Int64,
-    "avg_confidence_score": pl.Float64,
-    "max_confidence_score": pl.Float64,
-    "min_confidence_score": pl.Float64,
-    "objective_score": pl.Float64,
-    "positive_edge_sum": pl.Float64,
-    "negative_edge_penalty": pl.Float64,
-    "cluster_risk_score": pl.Float64,
-    "algorithm_version": pl.String,
-}
-
-_CLUSTER_PAIRS_SCHEMA: dict[str, Any] = {
-    "cluster_id": pl.String,
-    "pair_key": pl.String,
-    "is_reviewed": pl.Boolean,
-    "review_decision": pl.Boolean,
-    "assignment_score": pl.Float64,
-    "assignment_method": pl.String,
-}
-
-
 def _empty_clusters_frame() -> pl.DataFrame:
     """Return canonical empty cluster summary artifact."""
-    return pl.DataFrame(schema=_CLUSTERS_SCHEMA)
+    return pl.DataFrame(schema=CLUSTERS_SCHEMA)
 
 
 def _empty_cluster_pairs_frame() -> pl.DataFrame:
     """Return canonical empty cluster/pair bridge artifact."""
-    return pl.DataFrame(schema=_CLUSTER_PAIRS_SCHEMA)
+    return pl.DataFrame(schema=CLUSTER_PAIRS_SCHEMA)

@@ -10,6 +10,7 @@ from hsds_entity_resolution.core.pair_tiering import (
     is_review_eligible_score,
 )
 from hsds_entity_resolution.types.contracts import MaterializeReviewQueueResult
+from hsds_entity_resolution.types.frames import REVIEW_QUEUE_SCHEMA
 
 
 def materialize_review_queue(
@@ -72,19 +73,7 @@ def materialize_review_queue(
 
 def _empty_review_queue_frame() -> pl.DataFrame:
     """Return canonical empty review-queue artifact."""
-    return pl.DataFrame(
-        schema={
-            "pair_key": pl.String,
-            "entity_a_id": pl.String,
-            "entity_b_id": pl.String,
-            "final_score": pl.Float64,
-            "cluster_risk_score": pl.Float64,
-            "priority_score": pl.Float64,
-            "team_id": pl.String,
-            "scope_id": pl.String,
-            "entity_type": pl.String,
-        }
-    )
+    return pl.DataFrame(schema=REVIEW_QUEUE_SCHEMA)
 
 
 def _pair_cluster_risk_lookup(
