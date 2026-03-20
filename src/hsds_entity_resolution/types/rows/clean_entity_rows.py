@@ -32,6 +32,7 @@ class RawEntityRowInput(TypedDict, total=False):
     # Display-quality passthrough fields: original casing, not used for hashing or embeddings.
     display_name: object
     display_description: object
+    display_organization_name: object
     alternate_name: object
     short_description: object
     application_process: object
@@ -70,6 +71,7 @@ class CleanEntityRow(CleanPayloadValues):
     # Display-quality passthrough fields: original casing preserved for cache presentation.
     display_name: str | None
     display_description: str | None
+    display_organization_name: str | None
     alternate_name: str | None
     short_description: str | None
     application_process: str | None

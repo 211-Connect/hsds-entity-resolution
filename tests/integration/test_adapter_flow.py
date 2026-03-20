@@ -34,6 +34,9 @@ class _FakeCursor:
         self.commands.append(command)
         return None
 
+    def fetchone(self) -> tuple[object, ...] | None:
+        return None
+
     @property
     def rowcount(self) -> int:
         return self._rowcount

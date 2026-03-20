@@ -227,6 +227,7 @@ def _clean_entity_row(*, row: RawEntityRowInput, entity_type: EntityType) -> Cle
         # Preserve original casing for display; not used in hashing or embeddings.
         "display_name": _passthrough_optional(row.get("display_name")),
         "display_description": _passthrough_optional(row.get("display_description")),
+        "display_organization_name": _passthrough_optional(row.get("display_organization_name")),
         "alternate_name": _passthrough_optional(row.get("alternate_name")),
         "short_description": _passthrough_optional(row.get("short_description")),
         "application_process": _passthrough_optional(row.get("application_process")),
