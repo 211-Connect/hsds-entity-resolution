@@ -373,6 +373,15 @@ class TestCleanTaxonomyObjects:
         assert len(result) == 1
         assert result[0]["code"] == "bd-1800"
 
+    def test_taxonomy_term_id_preserved_when_present(self) -> None:
+        """Canonical taxonomy payloads must retain taxonomy_term_id for persistence."""
+        result = clean_taxonomy_objects(
+            [{"taxonomy_term_id": "tax-1", "code": "BD-1800", "name": "Health Services"}]
+        )
+        assert len(result) == 1
+        assert result[0]["taxonomy_term_id"] == "tax-1"
+        assert result[0]["code"] == "bd-1800"
+
     def test_duplicate_codes_deduplicated_first_in_wins(self) -> None:
         """When two items resolve to the same code, the first one is kept."""
         result = clean_taxonomy_objects(
@@ -571,6 +580,29 @@ class TestCleanServicesRollup:
         assert isinstance(taxonomies, list)
         taxonomy_codes = [t.get("code") for t in taxonomies if isinstance(t, dict)]
         assert "yf-3000" in taxonomy_codes
+
+    def test_service_rollup_preserves_service_and_taxonomy_identifiers(self) -> None:
+        """Normalized service rollups must retain ids needed by cache persistence."""
+        result = clean_services_rollup(
+            [
+                {
+                    "id": "svc-1",
+                    "name": "Service A",
+                    "description": "Desc",
+                    "taxonomy_codes": [
+                        {"taxonomy_term_id": "tax-1", "code": "YF-3000", "name": "Food"}
+                    ],
+                }
+            ]
+        )
+        assert len(result) == 1
+        assert result[0]["id"] == "svc-1"
+        assert result[0]["description"] == "desc"
+        taxonomies = result[0]["taxonomies"]
+        assert isinstance(taxonomies, list)
+        first_taxonomy = taxonomies[0]
+        assert isinstance(first_taxonomy, dict)
+        assert first_taxonomy["taxonomy_term_id"] == "tax-1"
 
     def test_empty_list_returns_empty(self) -> None:
         assert clean_services_rollup([]) == []

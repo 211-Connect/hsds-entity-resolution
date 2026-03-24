@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from hsds_entity_resolution.core.dataframe_utils import clean_text_scalar
-from hsds_entity_resolution.types.rows import JsonObject
+from hsds_entity_resolution.types.rows import JsonObject, JsonValue
 
 _TAXONOMY_CODE_KEYS: Final[tuple[str, ...]] = (
     "code",
@@ -16,6 +16,7 @@ _TAXONOMY_CODE_KEYS: Final[tuple[str, ...]] = (
     "taxonomy_term_id",
     "taxonomyTermId",
 )
+_TAXONOMY_ID_KEYS: Final[tuple[str, ...]] = ("taxonomy_term_id", "taxonomyTermId")
 _SERVICE_TAXONOMY_KEYS: Final[tuple[str, ...]] = (
     "taxonomies",
     "TAXONOMIES",
@@ -30,10 +31,12 @@ def clean_taxonomy_objects(value: object) -> list[JsonObject]:
 
     The canonical ``code`` field is always present and normalised to lowercase.
     Alias code keys (``CODE``, ``taxonomy_code``, ``taxonomyCode``, etc.) are
-    removed — only the canonical ``code`` key is retained.  All other source
-    fields (``name``, ``description``, etc.) are preserved.  Objects are
-    deduplicated by normalised code and sorted by ``code`` for deterministic
-    content hashing.
+    removed — only the canonical lowercase ``code`` key is retained. When a
+    taxonomy-term identifier is present, it is preserved under the canonical
+    ``taxonomy_term_id`` key so downstream persistence can reconstruct the
+    denormalized cache rows. All other source fields (``name``,
+    ``description``, etc.) are preserved. Objects are deduplicated by
+    normalised code and sorted by ``code`` for deterministic content hashing.
     """
     if not isinstance(value, list):
         return []
@@ -53,8 +56,15 @@ def clean_taxonomy_objects(value: object) -> list[JsonObject]:
             # Preserve non-code source fields (e.g. name, description); drop alias
             # keys (CODE, taxonomy_code, etc.) so only the canonical lowercase
             # `code` key remains in the output object.
-            entry: JsonObject = {k: v for k, v in item.items() if k not in _TAXONOMY_CODE_KEYS}
+            entry: JsonObject = {
+                k: v
+                for k, v in item.items()
+                if k not in _TAXONOMY_CODE_KEYS and k != "taxonomy_term_id"
+            }
             entry["code"] = code
+            taxonomy_term_id = _first_present_preserving_case(item=item, keys=_TAXONOMY_ID_KEYS)
+            if taxonomy_term_id:
+                entry["taxonomy_term_id"] = taxonomy_term_id
             normalized.append(entry)
     return sorted(normalized, key=lambda x: str(x.get("code", "")))
 
@@ -72,16 +82,23 @@ def clean_services_rollup(value: object) -> list[JsonObject]:
             continue
         if not isinstance(item, Mapping):
             continue
-        taxonomies: set[str] = set()
+        raw_taxonomies: list[object] = []
         for key in _SERVICE_TAXONOMY_KEYS:
-            taxonomies.update(extract_taxonomy_codes(item.get(key)))
+            field_value = item.get(key)
+            if isinstance(field_value, list):
+                raw_taxonomies.extend(field_value)
         name = _first_non_empty(item=item, keys=_SERVICE_NAME_KEYS)
-        normalized.append(
-            {
-                "name": name,
-                "taxonomies": [{"code": code} for code in sorted(taxonomies)],
-            }
-        )
+        service: JsonObject = {
+            "name": name,
+            "taxonomies": cast(JsonValue, clean_taxonomy_objects(raw_taxonomies)),
+        }
+        service_id = _first_present_preserving_case(item=item, keys=("id", "ID"))
+        if service_id:
+            service["id"] = service_id
+        description = _first_non_empty(item=item, keys=("description", "DESCRIPTION"))
+        if description:
+            service["description"] = description
+        normalized.append(service)
     return normalized
 
 
@@ -172,4 +189,17 @@ def _first_non_empty(*, item: Mapping[str, Any], keys: tuple[str, ...]) -> str:
             value = clean_text_scalar(item.get(key))
             if value:
                 return value
+    return ""
+
+
+def _first_present_preserving_case(*, item: Mapping[str, Any], keys: tuple[str, ...]) -> str:
+    """Return first present scalar with whitespace normalized but original case preserved."""
+    for key in keys:
+        if key in item:
+            value = item.get(key)
+            if value is None:
+                continue
+            text_value = " ".join(str(value).split())
+            if text_value:
+                return text_value
     return ""
