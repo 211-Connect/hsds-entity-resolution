@@ -54,6 +54,7 @@ def score_candidates(
     denormalized_organization: pl.DataFrame,
     denormalized_service: pl.DataFrame,
     config: EntityResolutionRunConfig,
+    taxonomy_embeddings: dict[str, list[float]] | None = None,
     progress_logger: IncrementalProgressLogger | None = None,
 ) -> ScoreCandidatesResult:
     """Score candidate pairs and emit explainability reasons."""
@@ -88,6 +89,7 @@ def score_candidates(
         pre_ml_records=pre_ml_records,
         entity_lookup=entity_lookup,
         config=config,
+        taxonomy_embeddings=taxonomy_embeddings,
     )
     if progress_logger is not None:
         progress_logger.stage_started(
@@ -198,6 +200,7 @@ def _score_ml_subset(
     pre_ml_records: list[PreMlPairRecord],
     entity_lookup: dict[tuple[str, str], dict[str, Any]],
     config: EntityResolutionRunConfig,
+    taxonomy_embeddings: dict[str, list[float]] | None = None,
 ) -> dict[str, float]:
     """Run model inference for gated pairs, grouped by entity type."""
     if not config.scoring.ml.ml_enabled:
@@ -215,12 +218,43 @@ def _score_ml_subset(
             "embedding_similarity": candidate["embedding_similarity"],
             "entity_a": to_legacy_entity(row=left),
             "entity_b": to_legacy_entity(row=right),
+            "signal_overrides": _extract_signal_overrides(record=record),
         }
         grouped.setdefault(entity_type, []).append(payload)
     scores: dict[str, float] = {}
     for entity_type, pairs in grouped.items():
-        scores.update(score_pairs_with_model(pairs=pairs, entity_type=entity_type))
+        scores.update(
+            score_pairs_with_model(
+                pairs=pairs,
+                entity_type=entity_type,
+                taxonomy_embeddings=taxonomy_embeddings,
+            )
+        )
     return scores
+
+
+def _extract_signal_overrides(*, record: PreMlPairRecord) -> dict[str, float]:
+    """Build ML feature overrides from pre-computed deterministic and NLP signals.
+
+    Three features in SERVICE_FEATURES — fuzzy_name, shared_address, and shared_phone —
+    are not produced by FeatureExtractor.extract_features(). In the original pipeline
+    they were deterministic/NLP signals merged into the feature dict by the ensemble
+    before calling the model. This function reconstructs that merge from the reasons
+    already computed during the pre-ML scoring step.
+    """
+    overrides: dict[str, float] = {}
+    for reason in record.det_reasons:
+        if reason["match_type"] in ("shared_address", "shared_phone"):
+            overrides[reason["match_type"]] = float(reason["raw_contribution"])
+    for reason in record.nlp_reasons:
+        if reason["match_type"] == "name_similarity":
+            overrides["fuzzy_name"] = float(reason["raw_contribution"])
+    # When name_similarity did not reach the contributing-evidence threshold its
+    # reason is absent from nlp_reasons; fall back to the weighted NLP section
+    # score so fuzzy_name is never silently zeroed out.
+    if "fuzzy_name" not in overrides:
+        overrides["fuzzy_name"] = float(record.nlp_score)
+    return overrides
 
 
 def _finalize_pair(

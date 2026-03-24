@@ -76,6 +76,7 @@ def score_pairs_with_model(
     *,
     pairs: list[dict[str, Any]],
     entity_type: str,
+    taxonomy_embeddings: dict[str, list[float]] | None = None,
 ) -> dict[str, float]:
     """Score candidate pairs via AI-Utils endpoint and return `pair_key -> score`."""
     endpoint = os.getenv("AI_UTILS_ENDPOINT", "").strip().rstrip("/")
@@ -85,7 +86,10 @@ def score_pairs_with_model(
     batch_size = max(_int_env("AI_UTILS_BATCH_SIZE", 100), 1)
     api_key = os.getenv("AI_UTILS_API_KEY")
     try:
-        extractor = _build_feature_extractor(entity_type=entity_type)
+        extractor = _build_feature_extractor(
+            entity_type=entity_type,
+            taxonomy_embeddings=taxonomy_embeddings,
+        )
     except (ImportError, ModuleNotFoundError) as exc:
         _log.warning("ML scoring skipped: feature extractor unavailable (%s)", exc)
         return {}
@@ -121,7 +125,11 @@ def score_pairs_with_model(
     return scores
 
 
-def _build_feature_extractor(*, entity_type: str) -> Any:
+def _build_feature_extractor(
+    *,
+    entity_type: str,
+    taxonomy_embeddings: dict[str, list[float]] | None = None,
+) -> Any:
     """Create legacy feature extractor with matching TF-IDF model path semantics."""
     from hsds_entity_resolution.core.feature_extractor import FeatureExtractor
 
@@ -130,6 +138,7 @@ def _build_feature_extractor(*, entity_type: str) -> Any:
         rollup_services=True,
         model_type=entity_type,
         tfidf_vectorizer_path=str(vectorizer_path) if vectorizer_path else None,
+        taxonomy_embeddings=taxonomy_embeddings or {},
     )
 
 
@@ -161,6 +170,10 @@ def _extract_pair_features(
     raw_features["embedding_similarity"] = _safe_float(
         pair.get("embedding_similarity"), default=0.0
     )
+    # Merge pre-computed deterministic/NLP signal values (fuzzy_name, shared_address,
+    # shared_phone) that the model expects but FeatureExtractor never produces on its own.
+    for key, value in (pair.get("signal_overrides") or {}).items():
+        raw_features[key] = _safe_float(value, default=0.0)
     feature_names = ORGANIZATION_FEATURES if entity_type == "organization" else SERVICE_FEATURES
     api_features = {
         name: _safe_float(raw_features.get(name), default=0.0) for name in feature_names

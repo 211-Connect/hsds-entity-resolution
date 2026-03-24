@@ -31,6 +31,7 @@ def run_incremental(
     previous_entity_index: pl.DataFrame | pl.LazyFrame,
     previous_pair_state_index: pl.DataFrame | pl.LazyFrame,
     config: EntityResolutionRunConfig,
+    taxonomy_embeddings: dict[str, list[float]] | None = None,
     explicit_backfill: bool = False,
     force_rescore: bool = False,
     scope_removed: bool = False,
@@ -95,6 +96,7 @@ def run_incremental(
         denormalized_organization=cleaned.denormalized_organization,
         denormalized_service=cleaned.denormalized_service,
         config=config,
+        taxonomy_embeddings=taxonomy_embeddings,
         progress_logger=logger,
     )
     logger.stage_completed(
