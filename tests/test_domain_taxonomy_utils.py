@@ -1,12 +1,12 @@
 """Tests for domain_utils and taxonomy_utils.
 
-Tests specify correct HSDS entity resolution behavior.  Tier C tests lock in
-known limitations that are documented in todo.md rather than fixed here.
+Tests specify correct HSDS entity resolution behavior.
 """
 
 from __future__ import annotations
 
 from hsds_entity_resolution.core.domain_utils import (
+    domain_overlap_score,
     extract_contact_domains,
     extract_domain,
 )
@@ -133,27 +133,208 @@ class TestExtractContactDomains:
         result = extract_contact_domains(emails_value=None, websites_value=None)
         assert result == set()
 
-    def test_subdomains_not_collapsed_known_gap(self) -> None:
-        """Tier C: subdomains are NOT collapsed to their root domain.
+    def test_subdomains_preserved_as_distinct_entries(self) -> None:
+        """extract_contact_domains always returns full hostnames, never collapses subdomains.
 
-        'services.unitedway.org' and 'outreach.unitedway.org' are treated as
-        completely distinct domains.  For HSDS umbrella organizations that host
-        multiple services under different subdomains, this produces zero overlap
-        signal between two genuine listings of the same organization.
-
-        This test documents the current (undesirable) behavior.  See todo.md
-        for the proposed tldextract-based improvement.
+        Subdomain collapsing and graded overlap are responsibilities of
+        domain_overlap_score, not extract_contact_domains.  This keeps the two
+        concerns cleanly separated.
         """
         result = extract_contact_domains(
             emails_value=["info@services.unitedway.org"],
             websites_value=["outreach.unitedway.org"],
         )
-        # Current behavior: two distinct entries, no shared domain recognized
         assert "services.unitedway.org" in result
         assert "outreach.unitedway.org" in result
-        assert len(result) == 2, (
-            "Tier C known gap: subdomains are not collapsed to registrable root domain. "
-            "See todo.md for proposed fix using tldextract."
+        assert len(result) == 2
+
+
+# ===========================================================================
+# domain_utils — domain_overlap_score (graded URL matching)
+# ===========================================================================
+
+
+class TestDomainOverlapScore:
+    """Graded overlap scoring via domain_overlap_score.
+
+    Score tiers:
+        1.0 — same hostname, no path on either side
+        0.8 — same hostname, path present on at least one URL
+        0.4 — same eTLD+1, different subdomains
+        0.0 — no overlap or empty inputs
+    """
+
+    # -------------------------------------------------------------------
+    # 1.0 — clean root match (same host, no path on either side)
+    # -------------------------------------------------------------------
+
+    def test_identical_bare_domains_score_1(self) -> None:
+        assert (
+            domain_overlap_score(
+                left_emails=[],
+                left_websites=["https://www.abc.com"],
+                right_emails=[],
+                right_websites=["https://www.abc.com"],
+            )
+            == 1.0
+        )
+
+    def test_www_vs_bare_same_host_score_1(self) -> None:
+        """www. prefix is stripped; www.abc.com and abc.com are the same host."""
+        assert (
+            domain_overlap_score(
+                left_emails=[],
+                left_websites=["https://www.abc.com"],
+                right_emails=[],
+                right_websites=["https://abc.com"],
+            )
+            == 1.0
+        )
+
+    def test_http_vs_https_same_host_score_1(self) -> None:
+        assert (
+            domain_overlap_score(
+                left_emails=[],
+                left_websites=["http://abc.com"],
+                right_emails=[],
+                right_websites=["https://abc.com"],
+            )
+            == 1.0
+        )
+
+    def test_email_domain_matches_website_root_score_1(self) -> None:
+        """An email whose domain equals the website root is a clean root match."""
+        assert (
+            domain_overlap_score(
+                left_emails=["contact@northshelter.org"],
+                left_websites=[],
+                right_emails=[],
+                right_websites=["https://northshelter.org"],
+            )
+            == 1.0
+        )
+
+    # -------------------------------------------------------------------
+    # 0.8 — same host but at least one URL carries a path slug
+    # -------------------------------------------------------------------
+
+    def test_website_with_path_vs_root_score_08(self) -> None:
+        """One side has a path slug; same hostname → 0.8."""
+        score = domain_overlap_score(
+            left_emails=[],
+            left_websites=["https://www.abc.com/programs"],
+            right_emails=[],
+            right_websites=["https://abc.com"],
+        )
+        assert score == 0.8
+
+    def test_both_websites_with_different_paths_score_08(self) -> None:
+        score = domain_overlap_score(
+            left_emails=[],
+            left_websites=["https://abc.com/services"],
+            right_emails=[],
+            right_websites=["https://abc.com/contact"],
+        )
+        assert score == 0.8
+
+    def test_both_websites_with_same_path_score_08(self) -> None:
+        score = domain_overlap_score(
+            left_emails=[],
+            left_websites=["https://abc.com/services"],
+            right_emails=[],
+            right_websites=["https://abc.com/services"],
+        )
+        assert score == 0.8
+
+    # -------------------------------------------------------------------
+    # 0.4 — same eTLD+1, different subdomains (umbrella-org signal)
+    # -------------------------------------------------------------------
+
+    def test_different_subdomains_same_root_score_04(self) -> None:
+        """services.unitedway.org vs outreach.unitedway.org: same eTLD+1, different sub."""
+        score = domain_overlap_score(
+            left_emails=[],
+            left_websites=["services.unitedway.org"],
+            right_emails=[],
+            right_websites=["outreach.unitedway.org"],
+        )
+        assert score == 0.4
+
+    def test_numbered_subdomain_vs_www_same_root_score_04(self) -> None:
+        """https://123.abc.com vs https://www.abc.com: same registered domain."""
+        score = domain_overlap_score(
+            left_emails=[],
+            left_websites=["https://123.abc.com"],
+            right_emails=[],
+            right_websites=["https://www.abc.com"],
+        )
+        assert score == 0.4
+
+    def test_email_subdomain_vs_different_website_subdomain_score_04(self) -> None:
+        score = domain_overlap_score(
+            left_emails=["info@services.unitedway.org"],
+            left_websites=[],
+            right_emails=[],
+            right_websites=["outreach.unitedway.org"],
+        )
+        assert score == 0.4
+
+    def test_best_score_wins_across_multiple_contacts(self) -> None:
+        """If one contact pair gives 1.0 and another gives 0.4, the score is 1.0."""
+        score = domain_overlap_score(
+            left_emails=["contact@unitedway.org"],
+            left_websites=["services.unitedway.org"],
+            right_emails=[],
+            right_websites=["unitedway.org"],
+        )
+        assert score == 1.0
+
+    # -------------------------------------------------------------------
+    # 0.0 — no match or empty inputs
+    # -------------------------------------------------------------------
+
+    def test_completely_different_domains_score_0(self) -> None:
+        assert (
+            domain_overlap_score(
+                left_emails=[],
+                left_websites=["https://acme.org"],
+                right_emails=[],
+                right_websites=["https://widgets.com"],
+            )
+            == 0.0
+        )
+
+    def test_empty_left_score_0(self) -> None:
+        assert (
+            domain_overlap_score(
+                left_emails=[],
+                left_websites=[],
+                right_emails=[],
+                right_websites=["https://abc.com"],
+            )
+            == 0.0
+        )
+
+    def test_empty_right_score_0(self) -> None:
+        assert (
+            domain_overlap_score(
+                left_emails=["contact@abc.com"],
+                left_websites=[],
+                right_emails=[],
+                right_websites=[],
+            )
+            == 0.0
+        )
+
+    def test_none_inputs_score_0(self) -> None:
+        assert (
+            domain_overlap_score(
+                left_emails=None,
+                left_websites=None,
+                right_emails=None,
+                right_websites=None,
+            )
+            == 0.0
         )
 
 

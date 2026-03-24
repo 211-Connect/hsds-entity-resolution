@@ -16,6 +16,7 @@ dependencies = [
     "tenacity>=9.1.4",
     "dagster-dbt>=0.28",
     "dbt-snowflake>=1.8",
+    "tldextract>=5.3.1",
 ]
 
 [dependency-groups]

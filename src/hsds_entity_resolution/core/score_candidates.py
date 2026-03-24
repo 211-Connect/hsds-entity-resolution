@@ -15,7 +15,7 @@ from hsds_entity_resolution.core.dataframe_utils import (
     clean_text_scalar,
     frame_with_schema,
 )
-from hsds_entity_resolution.core.domain_utils import extract_contact_domains
+from hsds_entity_resolution.core.domain_utils import domain_overlap_score
 from hsds_entity_resolution.core.evidence_policy import is_contributing_evidence
 from hsds_entity_resolution.core.ml_inference import score_pairs_with_model, to_legacy_entity
 from hsds_entity_resolution.core.nlp import compute_nlp_score
@@ -285,13 +285,11 @@ def _deterministic_score(
     config: EntityResolutionRunConfig,
 ) -> tuple[float, list[dict[str, Any]]]:
     """Compute deterministic overlap score using legacy-compatible normalization."""
-    shared_domain_left = extract_contact_domains(
-        emails_value=left.get("emails"),
-        websites_value=left.get("websites"),
-    )
-    shared_domain_right = extract_contact_domains(
-        emails_value=right.get("emails"),
-        websites_value=right.get("websites"),
+    domain_raw = domain_overlap_score(
+        left_emails=left.get("emails"),
+        left_websites=left.get("websites"),
+        right_emails=right.get("emails"),
+        right_websites=right.get("websites"),
     )
     shared_address_left = _canonical_address_values(left.get("locations"))
     shared_address_right = _canonical_address_values(right.get("locations"))
@@ -309,8 +307,8 @@ def _deterministic_score(
             config.scoring.deterministic.shared_phone,
         ),
         "shared_domain": (
-            sorted(shared_domain_left),
-            sorted(shared_domain_right),
+            [],
+            [],
             config.scoring.deterministic.shared_domain,
         ),
         "shared_address": (
@@ -329,7 +327,7 @@ def _deterministic_score(
     enabled_weight_total = 0.0
     for match_type, (left_values, right_values, signal) in channels.items():
         raw = (
-            _binary_domain_overlap(left_values=left_values, right_values=right_values)
+            domain_raw
             if match_type == "shared_domain"
             else _overlap_ratio(left_values=left_values, right_values=right_values)
         )
@@ -388,15 +386,6 @@ def _overlap_ratio(*, left_values: Any, right_values: Any) -> float:
     overlap_count = len(left_set.intersection(right_set))
     denominator = max(len(left_set), len(right_set))
     return overlap_count / denominator
-
-
-def _binary_domain_overlap(*, left_values: Any, right_values: Any) -> float:
-    """Return binary overlap score for domain matching to preserve legacy parity."""
-    left_set = set(clean_string_list(left_values))
-    right_set = set(clean_string_list(right_values))
-    if not left_set or not right_set:
-        return 0.0
-    return 1.0 if left_set.intersection(right_set) else 0.0
 
 
 def _canonical_address_values(locations_value: Any) -> list[str]:
