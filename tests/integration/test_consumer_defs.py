@@ -11,3 +11,5 @@ def test_consumer_defs_exposes_il211_jobs() -> None:
     job_names = sorted(job.name for job in defs.jobs)
     assert "entity_resolution__il211_regional__organization" in job_names
     assert "entity_resolution__il211_regional__service" in job_names
+    assert "training_features__il211_regional_training__organization" in job_names
+    assert "training_features__il211_regional_training__service" in job_names
