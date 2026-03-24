@@ -10,66 +10,9 @@ from typing import Any
 from urllib import error, request
 
 from hsds_entity_resolution.core.taxonomy_utils import to_legacy_services, to_legacy_taxonomies
+from hsds_entity_resolution.core.training_features import build_api_feature_payload
 
 _log = logging.getLogger(__name__)
-
-ORGANIZATION_FEATURES = [
-    "both_have_email",
-    "both_have_cities",
-    "both_have_zip",
-    "token_overlap_count",
-    "total_token_count",
-    "name_length_diff_in_tokens",
-    "same_state",
-    "same_zipcode",
-    "name_levenshtein",
-    "min_services",
-    "max_services",
-    "total_services",
-    "both_have_services",
-    "shared_service_names",
-    "max_service_name_jaccard",
-    "shared_service_taxonomies",
-    "total_unique_service_taxonomies",
-    "shared_address",
-    "embedding_similarity",
-    "name_complexity_diff",
-    "name_complexity_ratio",
-    "num_services_min",
-    "tfidf_weighted_similarity",
-    "shared_identifier",
-    "shared_identifier_similarity",
-]
-
-SERVICE_FEATURES = [
-    "both_have_email",
-    "both_have_phone",
-    "both_have_website",
-    "both_have_zip",
-    "same_city",
-    "name_token_sort",
-    "shared_taxonomy_count",
-    "both_have_taxonomies",
-    "total_taxonomy_count",
-    "name_complexity_max",
-    "description_complexity_ratio",
-    "num_services_max",
-    "num_services_diff",
-    "percent_shared_taxonomies",
-    "taxonomy_hierarchy_match_score",
-    "taxonomy_pairs_sim_gt_085",
-    "taxonomy_pairs_sim_gt_085_ratio",
-    "is_virtual_service_diff",
-    "both_are_virtual_services",
-    "same_org_name_fuzzy",
-    "fuzzy_name",
-    "shared_address",
-    "shared_phone",
-    "embedding_similarity",
-    "bigram_overlap",
-    "description_length_ratio",
-    "containment_asymmetry",
-]
 
 
 def score_pairs_with_model(
@@ -86,7 +29,7 @@ def score_pairs_with_model(
     batch_size = max(_int_env("AI_UTILS_BATCH_SIZE", 100), 1)
     api_key = os.getenv("AI_UTILS_API_KEY")
     try:
-        extractor = _build_feature_extractor(
+        extractor = build_feature_extractor(
             entity_type=entity_type,
             taxonomy_embeddings=taxonomy_embeddings,
         )
@@ -125,7 +68,7 @@ def score_pairs_with_model(
     return scores
 
 
-def _build_feature_extractor(
+def build_feature_extractor(
     *,
     entity_type: str,
     taxonomy_embeddings: dict[str, list[float]] | None = None,
@@ -139,6 +82,18 @@ def _build_feature_extractor(
         model_type=entity_type,
         tfidf_vectorizer_path=str(vectorizer_path) if vectorizer_path else None,
         taxonomy_embeddings=taxonomy_embeddings or {},
+    )
+
+
+def _build_feature_extractor(
+    *,
+    entity_type: str,
+    taxonomy_embeddings: dict[str, list[float]] | None = None,
+) -> Any:
+    """Backward-compatible private wrapper for existing tests/imports."""
+    return build_feature_extractor(
+        entity_type=entity_type,
+        taxonomy_embeddings=taxonomy_embeddings,
     )
 
 
@@ -164,21 +119,14 @@ def _extract_pair_features(
     entity_type: str,
 ) -> dict[str, Any]:
     """Extract legacy ML feature payload for one pair and keep pair identity."""
-    entity_a = pair["entity_a"]
-    entity_b = pair["entity_b"]
-    raw_features = extractor.extract_features(entity_a, entity_b)
-    raw_features["embedding_similarity"] = _safe_float(
-        pair.get("embedding_similarity"), default=0.0
-    )
-    # Merge pre-computed deterministic/NLP signal values (fuzzy_name, shared_address,
-    # shared_phone) that the model expects but FeatureExtractor never produces on its own.
-    for key, value in (pair.get("signal_overrides") or {}).items():
-        raw_features[key] = _safe_float(value, default=0.0)
-    feature_names = ORGANIZATION_FEATURES if entity_type == "organization" else SERVICE_FEATURES
-    api_features = {
-        name: _safe_float(raw_features.get(name), default=0.0) for name in feature_names
+    return {
+        "pair_key": pair["pair_key"],
+        "api_features": build_api_feature_payload(
+            pair=pair,
+            extractor=extractor,
+            entity_type=entity_type,
+        ),
     }
-    return {"pair_key": pair["pair_key"], "api_features": api_features}
 
 
 def _post_json(

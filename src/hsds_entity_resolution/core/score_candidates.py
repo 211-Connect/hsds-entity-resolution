@@ -23,6 +23,7 @@ from hsds_entity_resolution.core.pair_tiering import (
     classify_pair_outcome,
     is_review_eligible_outcome,
 )
+from hsds_entity_resolution.core.training_features import build_signal_overrides_from_reason_sets
 from hsds_entity_resolution.observability import IncrementalProgressLogger
 from hsds_entity_resolution.types.contracts import ScoreCandidatesResult
 from hsds_entity_resolution.types.frames import PAIR_REASONS_SCHEMA, SCORED_PAIRS_SCHEMA
@@ -242,19 +243,11 @@ def _extract_signal_overrides(*, record: PreMlPairRecord) -> dict[str, float]:
     before calling the model. This function reconstructs that merge from the reasons
     already computed during the pre-ML scoring step.
     """
-    overrides: dict[str, float] = {}
-    for reason in record.det_reasons:
-        if reason["match_type"] in ("shared_address", "shared_phone"):
-            overrides[reason["match_type"]] = float(reason["raw_contribution"])
-    for reason in record.nlp_reasons:
-        if reason["match_type"] == "name_similarity":
-            overrides["fuzzy_name"] = float(reason["raw_contribution"])
-    # When name_similarity did not reach the contributing-evidence threshold its
-    # reason is absent from nlp_reasons; fall back to the weighted NLP section
-    # score so fuzzy_name is never silently zeroed out.
-    if "fuzzy_name" not in overrides:
-        overrides["fuzzy_name"] = float(record.nlp_score)
-    return overrides
+    return build_signal_overrides_from_reason_sets(
+        det_reasons=record.det_reasons,
+        nlp_reasons=record.nlp_reasons,
+        nlp_score=record.nlp_score,
+    )
 
 
 def _finalize_pair(
