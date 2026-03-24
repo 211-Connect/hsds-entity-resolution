@@ -77,9 +77,7 @@ class NlpConfig(BaseStrictModel):
     fuzzy_algorithm: str = "sequence_matcher"
     fuzzy_threshold: float = Field(default=0.88, ge=0.6, le=0.98)
     number_mismatch_veto_enabled: bool = True
-    direction_mismatch_penalty: float = Field(default=0.1, ge=0.0, le=1.0)
     standalone_fuzzy_threshold: float = Field(default=0.94, ge=0.7, le=0.99)
-    min_fuzzy_contribution_threshold: float = Field(default=0.15, ge=0.0, le=0.5)
 
 
 class MlConfig(BaseStrictModel):
@@ -182,9 +180,6 @@ class EntityResolutionRunConfig(BaseStrictModel):
                 nlp=NlpConfig(
                     fuzzy_threshold=scoring_values["fuzzy_threshold"],
                     standalone_fuzzy_threshold=scoring_values["standalone_fuzzy_threshold"],
-                    min_fuzzy_contribution_threshold=scoring_values[
-                        "min_fuzzy_contribution_threshold"
-                    ],
                 ),
                 ml=MlConfig(ml_gate_threshold=scoring_values["ml_gate_threshold"]),
                 deterministic_section_weight=scoring_values["deterministic_section_weight"],
@@ -235,7 +230,6 @@ def _build_scoring_defaults(*, entity_type: EntityType) -> dict[str, float]:
             "ml_section_weight": 0.20,
             "fuzzy_threshold": 0.88,
             "standalone_fuzzy_threshold": 0.94,
-            "min_fuzzy_contribution_threshold": 0.15,
             "ml_gate_threshold": 0.55,
             "duplicate_threshold": 0.82,
             "maybe_threshold": 0.68,
@@ -259,7 +253,6 @@ def _build_scoring_defaults(*, entity_type: EntityType) -> dict[str, float]:
         "ml_section_weight": 0.20,
         "fuzzy_threshold": 0.86,
         "standalone_fuzzy_threshold": 0.92,
-        "min_fuzzy_contribution_threshold": 0.12,
         "ml_gate_threshold": 0.50,
         "duplicate_threshold": 0.70,
         "maybe_threshold": 0.62,

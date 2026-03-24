@@ -137,8 +137,10 @@ def test_consumer_adapter_runs_end_to_end_with_fake_persistence(tmp_path: Path) 
     assert "DEDUPLICATION_RUN" in result.persisted_tables
     assert result.reconciliation.pair_state_count >= 0
     assert result.reconciliation.run_state_count == 1
+    # MERGE operations are handled by dbt; the cursor sees only the three DELETE
+    # cleanup templates that execute_cleanup runs after dbt.
     assert any(
-        "MERGE INTO DEDUPLICATION.COMMON_EXPERIMENT.DUPLICATE_PAIRS" in cmd
+        cmd.startswith("DELETE FROM DEDUPLICATION.COMMON_EXPERIMENT.")
         for cmd in session_manager.cursor.commands
     )
 

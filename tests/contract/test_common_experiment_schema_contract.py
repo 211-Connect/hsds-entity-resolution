@@ -72,8 +72,8 @@ def _sample_artifacts() -> dict[str, pl.DataFrame]:
         {
             "entity_id": ["org-a", "org-b"],
             "source_schema": ["COMMON_EXPERIMENT", "COMMON_EXPERIMENT"],
-            "name": ["Alpha", "Alpha Clinic"],
-            "description": ["A", "A clinic"],
+            "name": ["Alpha Clinic", "Alpha Clinic"],
+            "description": ["A", "A"],
             "emails": [["one@example.org"], ["one@example.org"]],
             "phones": [["555-0000"], ["555-0000"]],
             "websites": [["example.org"], ["example.org"]],

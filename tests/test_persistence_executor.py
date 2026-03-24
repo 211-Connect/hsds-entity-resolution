@@ -24,25 +24,63 @@ class _FakeCursor:
         return self._rowcount
 
 
-def test_shared_templates_execute_as_individual_statements() -> None:
-    """Shared templates with multiple statements should execute one statement at a time."""
+def test_execute_cleanup_runs_three_templates_in_order() -> None:
+    """execute_cleanup should run delete_cascade, purge_stale, and recompute templates."""
     executor = PersistenceExecutor(Path("consumer/consumer_adapter/sql"))
     cursor = _FakeCursor()
 
-    results = executor._execute_shared_templates(
+    results = executor.execute_cleanup(
         cursor=cursor,
         database="DEDUPLICATION",
         schema="COMMON_EXPERIMENT",
         run_id="run-1",
+        scope_id="scope-1",
+        entity_type="organization",
         stage_tables={"removed_pair_ids": "STG_REMOVED_PAIR_IDS"},
     )
 
-    delete_commands = [command for command in cursor.commands if command.startswith("DELETE FROM")]
-    assert len(delete_commands) == 5
-    assert all(command.count("DELETE FROM") == 1 for command in delete_commands)
     assert [result.template for result in results] == [
         "delete_cascade_removed_pairs.sql",
+        "purge_stale_pairs.sql",
         "recompute_cluster_aggregates.sql",
     ]
-    assert results[0].rowcount == 5
-    assert results[1].rowcount == 1
+
+
+def test_execute_cleanup_splits_multi_statement_templates() -> None:
+    """Each SQL statement within a template is executed as a separate cursor call."""
+    executor = PersistenceExecutor(Path("consumer/consumer_adapter/sql"))
+    cursor = _FakeCursor()
+
+    executor.execute_cleanup(
+        cursor=cursor,
+        database="DEDUPLICATION",
+        schema="COMMON_EXPERIMENT",
+        run_id="run-1",
+        scope_id="scope-1",
+        entity_type="organization",
+        stage_tables={"removed_pair_ids": "STG_REMOVED_PAIR_IDS"},
+    )
+
+    # Every command passed to the cursor must contain at most one statement.
+    assert all(cmd.count(";") == 1 for cmd in cursor.commands)
+
+
+def test_execute_cleanup_delete_statements_are_individual() -> None:
+    """DELETE statements must not be batched — each DELETE is one cursor.execute call."""
+    executor = PersistenceExecutor(Path("consumer/consumer_adapter/sql"))
+    cursor = _FakeCursor()
+
+    executor.execute_cleanup(
+        cursor=cursor,
+        database="DEDUPLICATION",
+        schema="COMMON_EXPERIMENT",
+        run_id="run-1",
+        scope_id="scope-1",
+        entity_type="organization",
+        stage_tables={"removed_pair_ids": "STG_REMOVED_PAIR_IDS"},
+    )
+
+    delete_commands = [cmd for cmd in cursor.commands if cmd.startswith("DELETE FROM")]
+    # delete_cascade (5) + purge_stale (4 top-level DELETEs; the fifth is inside a WITH CTE) = 9
+    assert len(delete_commands) == 9
+    assert all(cmd.count("DELETE FROM") == 1 for cmd in delete_commands)

@@ -257,48 +257,6 @@ def test_nlp_score_positive_with_nonzero_deterministic_and_similar_names() -> No
 
 
 # ---------------------------------------------------------------------------
-# compute_nlp_score — min_fuzzy_contribution_threshold gate (Tier C contract)
-# ---------------------------------------------------------------------------
-
-
-def test_min_fuzzy_contribution_threshold_is_dead_check_with_current_config_bounds() -> None:
-    """Tier C: min_fuzzy_contribution_threshold is unreachable with valid config.
-
-    With current field constraints:
-      fuzzy_threshold in [0.6, 0.98]
-      min_fuzzy_contribution_threshold in [0.0, 0.5]
-
-    fuzzy_threshold >= 0.6 > 0.5 >= min_fuzzy_contribution_threshold always.
-    So any weighted score that passes the fuzzy_threshold gate is already
-    >= 0.6, which is always > any valid min_fuzzy_contribution_threshold.
-    The gate is dead code and will never zero out a non-zero weighted score.
-
-    This test locks in the current behavior so that if the config constraints
-    change to allow min_fuzzy_contribution_threshold > fuzzy_threshold, the
-    behavior change is surfaced explicitly.  See todo.md for follow-up.
-    """
-    # Use the lowest valid fuzzy_threshold (0.6) and highest valid
-    # min_fuzzy_contribution_threshold (0.5).  Even in this extreme case,
-    # a passing score (>= 0.6) is still above 0.5, so the gate never fires.
-    base = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="t", scope_id="s", entity_type="organization"
-    )
-    data = base.model_dump()
-    data["scoring"]["nlp"]["fuzzy_threshold"] = 0.6
-    data["scoring"]["nlp"]["min_fuzzy_contribution_threshold"] = 0.5
-    cfg = EntityResolutionRunConfig.model_validate(data)
-    contribution, raw = _nlp_score(
-        "North Shelter Services",
-        "North Shelter Services",
-        deterministic_score=0.5,
-        cfg=cfg,
-    )
-    # similarity = 1.0 >= fuzzy_threshold=0.6 → weighted=1.0
-    # 1.0 >= min_fuzzy_contribution_threshold=0.5 → gate does not fire
-    assert contribution > 0.0
-
-
-# ---------------------------------------------------------------------------
 # Algorithm routing
 # ---------------------------------------------------------------------------
 

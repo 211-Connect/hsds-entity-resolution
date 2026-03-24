@@ -26,13 +26,14 @@ _SERVICE_NAME_KEYS: Final[tuple[str, ...]] = ("name", "NAME")
 
 
 def clean_taxonomy_objects(value: object) -> list[JsonObject]:
-    """Normalise taxonomy payloads, preserving all source fields and deduplicating by code.
+    """Normalise taxonomy payloads into canonical objects with a lowercase ``code`` key.
 
-    The canonical ``code`` field (normalised to lowercase) is always present.
-    All other source fields (``name``, ``description``, ``taxonomy_term_id``,
-    etc.) are preserved as-is so that downstream consumers — such as the
-    Snowflake cache writer — can validate the full object shape.  Objects are
-    sorted by ``code`` for deterministic content hashing.
+    The canonical ``code`` field is always present and normalised to lowercase.
+    Alias code keys (``CODE``, ``taxonomy_code``, ``taxonomyCode``, etc.) are
+    removed — only the canonical ``code`` key is retained.  All other source
+    fields (``name``, ``description``, etc.) are preserved.  Objects are
+    deduplicated by normalised code and sorted by ``code`` for deterministic
+    content hashing.
     """
     if not isinstance(value, list):
         return []
@@ -49,8 +50,10 @@ def clean_taxonomy_objects(value: object) -> list[JsonObject]:
             if not code or code in seen_codes:
                 continue
             seen_codes.add(code)
-            # Preserve every source field; overwrite with the canonical code.
-            entry: JsonObject = dict(item)
+            # Preserve non-code source fields (e.g. name, description); drop alias
+            # keys (CODE, taxonomy_code, etc.) so only the canonical lowercase
+            # `code` key remains in the output object.
+            entry: JsonObject = {k: v for k, v in item.items() if k not in _TAXONOMY_CODE_KEYS}
             entry["code"] = code
             normalized.append(entry)
     return sorted(normalized, key=lambda x: str(x.get("code", "")))

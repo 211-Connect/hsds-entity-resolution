@@ -38,8 +38,6 @@ def compute_nlp_score(
     weighted = 0.0
     if similarity >= config.scoring.nlp.fuzzy_threshold:
         weighted = similarity
-    if weighted < config.scoring.nlp.min_fuzzy_contribution_threshold:
-        weighted = 0.0
     if deterministic_score <= 0.0 and weighted < config.scoring.nlp.standalone_fuzzy_threshold:
         weighted = 0.0
     return weighted, similarity

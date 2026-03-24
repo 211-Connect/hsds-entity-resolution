@@ -38,42 +38,4 @@ def number_mismatch_safeguard(context: NlpSafeguardContext) -> NlpSafeguardOutco
     return NlpSafeguardOutcome()
 
 
-def direction_mismatch_safeguard(context: NlpSafeguardContext) -> NlpSafeguardOutcome:
-    """Apply configured penalty when both names include conflicting directions."""
-    direction_aliases = {
-        "n": "north",
-        "north": "north",
-        "s": "south",
-        "south": "south",
-        "e": "east",
-        "east": "east",
-        "w": "west",
-        "west": "west",
-        "ne": "northeast",
-        "northeast": "northeast",
-        "nw": "northwest",
-        "northwest": "northwest",
-        "se": "southeast",
-        "southeast": "southeast",
-        "sw": "southwest",
-        "southwest": "southwest",
-    }
-    left_tokens = {
-        direction_aliases[token]
-        for token in context.left_name.split()
-        if token in direction_aliases
-    }
-    right_tokens = {
-        direction_aliases[token]
-        for token in context.right_name.split()
-        if token in direction_aliases
-    }
-    if left_tokens and right_tokens and left_tokens != right_tokens:
-        return NlpSafeguardOutcome(penalty=context.config.scoring.nlp.direction_mismatch_penalty)
-    return NlpSafeguardOutcome()
-
-
-DEFAULT_NLP_SAFEGUARDS: tuple[NlpSafeguard, ...] = (
-    number_mismatch_safeguard,
-    direction_mismatch_safeguard,
-)
+DEFAULT_NLP_SAFEGUARDS: tuple[NlpSafeguard, ...] = (number_mismatch_safeguard,)

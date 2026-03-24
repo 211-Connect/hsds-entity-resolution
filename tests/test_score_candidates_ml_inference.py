@@ -90,8 +90,8 @@ def test_to_legacy_entity_normalizes_mixed_taxonomy_shapes() -> None:
         }
     )
 
-    assert legacy["TAXONOMIES"] == [{"code": "261q00000x"}]
-    assert legacy["SERVICES"] == [
+    assert legacy["taxonomies"] == [{"code": "261q00000x"}]
+    assert legacy["services_rollup"] == [
         {"name": "case management", "taxonomies": ["t1017"]},
         {"name": "case management", "taxonomies": ["t1017-1"]},
     ]
@@ -102,13 +102,11 @@ def test_score_candidates_honors_fuzzy_algorithm_setting() -> None:
     sequence_config = _config_with_nlp_overrides(
         fuzzy_algorithm="sequence_matcher",
         fuzzy_threshold=0.6,
-        min_fuzzy_contribution_threshold=0.0,
         standalone_fuzzy_threshold=0.7,
     )
     token_sort_config = _config_with_nlp_overrides(
         fuzzy_algorithm="token_sort_ratio",
         fuzzy_threshold=0.6,
-        min_fuzzy_contribution_threshold=0.0,
         standalone_fuzzy_threshold=0.7,
     )
 
@@ -144,7 +142,6 @@ def test_score_candidates_honors_fuzzy_threshold() -> None:
     config = _config_with_nlp_overrides(
         fuzzy_algorithm="sequence_matcher",
         fuzzy_threshold=0.98,
-        min_fuzzy_contribution_threshold=0.0,
         standalone_fuzzy_threshold=0.7,
     )
 
@@ -168,7 +165,6 @@ def test_score_candidates_honors_standalone_threshold() -> None:
     config = _config_with_nlp_overrides(
         fuzzy_algorithm="token_sort_ratio",
         fuzzy_threshold=0.6,
-        min_fuzzy_contribution_threshold=0.0,
         standalone_fuzzy_threshold=0.95,
     )
 
@@ -190,24 +186,15 @@ def test_score_candidates_honors_standalone_threshold() -> None:
     assert result.scored_pairs.row(0, named=True)["nlp_section_score"] == 0.0
 
 
-def test_score_candidates_applies_number_and_direction_safeguards() -> None:
-    """Number mismatch veto and direction penalty should follow config semantics."""
-    number_veto_config = _config_with_nlp_overrides(
+def test_score_candidates_applies_number_mismatch_safeguard() -> None:
+    """Number mismatch veto should zero out NLP when both names contain different numbers."""
+    config = _config_with_nlp_overrides(
         fuzzy_algorithm="token_sort_ratio",
         fuzzy_threshold=0.6,
-        min_fuzzy_contribution_threshold=0.0,
         standalone_fuzzy_threshold=0.7,
-        direction_mismatch_penalty=0.0,
-    )
-    direction_penalty_config = _config_with_nlp_overrides(
-        fuzzy_algorithm="token_sort_ratio",
-        fuzzy_threshold=0.6,
-        min_fuzzy_contribution_threshold=0.0,
-        standalone_fuzzy_threshold=0.7,
-        direction_mismatch_penalty=0.3,
     )
 
-    number_result = score_candidates_module.score_candidates(
+    result = score_candidates_module.score_candidates(
         candidate_pairs=_candidate_pairs(),
         denormalized_organization=_normalized_org_rows(
             "Station 4 Clinic",
@@ -215,21 +202,10 @@ def test_score_candidates_applies_number_and_direction_safeguards() -> None:
             include_overlap=False,
         ),
         denormalized_service=pl.DataFrame(),
-        config=number_veto_config,
-    )
-    direction_result = score_candidates_module.score_candidates(
-        candidate_pairs=_candidate_pairs(),
-        denormalized_organization=_normalized_org_rows(
-            "North Clinic",
-            "South Clinic",
-            include_overlap=False,
-        ),
-        denormalized_service=pl.DataFrame(),
-        config=direction_penalty_config,
+        config=config,
     )
 
-    assert number_result.scored_pairs.row(0, named=True)["nlp_section_score"] == 0.0
-    assert direction_result.scored_pairs.row(0, named=True)["nlp_section_score"] < 1.0
+    assert result.scored_pairs.row(0, named=True)["nlp_section_score"] == 0.0
 
 
 def test_score_candidates_rejects_unknown_fuzzy_algorithm_in_strict_mode() -> None:

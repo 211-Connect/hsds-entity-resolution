@@ -82,16 +82,28 @@ def cluster_pairs(
     # Use maybe_threshold as the edge-weight sign pivot so that every
     # review-eligible pair produces a non-negative edge and its two nodes
     # always end up in the same connected component.
-    edge_weights = _edge_weights_from_rows(active=active, threshold=config.scoring.maybe_threshold)
+    eligible_edge_weights = _edge_weights_from_rows(
+        active=active, threshold=config.scoring.maybe_threshold
+    )
+    # Full edge weights include non-eligible pairs (negative edges) so that the
+    # CC solver can resolve contradictory triangles — e.g. A≈B, A≈C, but B≠C.
+    # Without the negative B–C edge the solver would merge all three into one
+    # cluster, which contradicts the scoring signal on that pair.
+    all_active = finalized
+    if removed_keys:
+        all_active = all_active.filter(~pl.col("pair_key").is_in(sorted(removed_keys)))
+    full_edge_weights = _edge_weights_from_rows(
+        active=all_active, threshold=config.scoring.maybe_threshold
+    )
     components = _positive_components(
-        edges=edge_weights,
+        edges=eligible_edge_weights,
         min_edge_weight=config.clustering.min_edge_weight,
     )
     cluster_members: list[list[str]] = []
     for component_nodes in components:
         assignments = _solve_component(
             nodes=component_nodes,
-            edge_weights=edge_weights,
+            edge_weights=full_edge_weights,
             max_iter=config.clustering.max_iter,
         )
         cluster_members.extend(
@@ -119,7 +131,7 @@ def cluster_pairs(
     )
     cluster_pair_rows = _cluster_pair_rows(
         eligible=active,
-        edge_weights=edge_weights,
+        edge_weights=eligible_edge_weights,
         entity_to_cluster=entity_to_cluster,
         algorithm=config.clustering.algorithm,
     )
