@@ -117,6 +117,7 @@ def test_artifacts_map_cleanly_to_common_models() -> None:
             run_id="run-1",
             team_id="team-1",
             scope_id="scope-1",
+            target_schemas=["NE211", "DUPAGEC211"],
             entity_type="organization",
             config=config,
         ),
@@ -198,6 +199,7 @@ def test_service_artifacts_with_taxonomy_term_ids_map_cleanly_to_common_models()
             run_id="run-1",
             team_id="team-1",
             scope_id="scope-1",
+            target_schemas=["NE211", "DUPAGEC211"],
             entity_type="service",
             config=config,
         ),
@@ -229,11 +231,13 @@ def test_deduplication_run_mapping_uses_duplicate_count_for_threshold_metrics() 
             run_id="run-1",
             team_id="team-1",
             scope_id="scope-1",
+            target_schemas=["NE211", "DUPAGEC211"],
             entity_type="organization",
             config=config,
         ),
         now_value="2026-03-06T00:00:00+00:00",
     )
     row = mapped.row(0, named=True)
+    assert row["TARGET_SCHEMAS"] == ["NE211", "DUPAGEC211"]
     assert row["PAIRS_ABOVE_THRESHOLD"] == 2
     assert row["PAIRS_PREDICTED_DUPLICATE"] == 2
