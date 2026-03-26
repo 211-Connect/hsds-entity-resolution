@@ -224,3 +224,7 @@ scripts/
 
 HSDS_DATA_MODEL.md
 _hsds_table_desc/
+
+.agents/skills/snowsql-investigation/
+.codacy/
+docs/
