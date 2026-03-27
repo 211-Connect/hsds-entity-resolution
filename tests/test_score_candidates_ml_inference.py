@@ -18,6 +18,7 @@ def test_score_candidates_uses_model_score_when_available(monkeypatch) -> None:
         entity_type="organization",
     )
     payload = config.model_dump()
+    payload["scoring"]["ml"]["ml_enabled"] = True
     payload["scoring"]["ml"]["ml_gate_threshold"] = 0.0
     config = EntityResolutionRunConfig.model_validate(payload)
 
@@ -47,6 +48,7 @@ def test_score_candidates_falls_back_to_embedding_similarity(monkeypatch) -> Non
         entity_type="organization",
     )
     payload = config.model_dump()
+    payload["scoring"]["ml"]["ml_enabled"] = True
     payload["scoring"]["ml"]["ml_gate_threshold"] = 0.0
     config = EntityResolutionRunConfig.model_validate(payload)
 
@@ -430,7 +432,7 @@ def test_score_candidates_normalizes_deterministic_score_when_signal_disabled() 
         config=config,
     )
 
-    expected = 0.20 / 0.85
+    expected = 0.20 / 0.75
     assert result.scored_pairs.row(0, named=True)["deterministic_section_score"] == pytest.approx(
         expected
     )
@@ -453,6 +455,40 @@ def test_score_candidates_service_defaults_normalize_full_deterministic_match_to
         config=config,
     )
 
+    assert result.scored_pairs.row(0, named=True)["deterministic_section_score"] == pytest.approx(
+        1.0
+    )
+
+
+def test_score_candidates_service_ignores_identifier_overlap_even_when_present() -> None:
+    """Service scoring should not emit shared_identifier from synthetic identifier fixtures."""
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-svc-identifiers",
+        scope_id="scope-svc-identifiers",
+        entity_type="service",
+    ).model_dump()
+    payload["scoring"]["ml"]["ml_enabled"] = False
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    service_rows = _normalized_service_rows(include_overlap=True).with_columns(
+        pl.Series(
+            "identifiers",
+            [
+                [{"system": "provider_id", "value": "svc-123"}],
+                [{"system": "provider_id", "value": "svc-123"}],
+            ],
+        )
+    )
+
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_service_candidate_pairs(),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=service_rows,
+        config=config,
+    )
+
+    reasons = result.pair_reasons.to_dicts()
+    assert all(reason["match_type"] != "shared_identifier" for reason in reasons)
     assert result.scored_pairs.row(0, named=True)["deterministic_section_score"] == pytest.approx(
         1.0
     )
@@ -805,14 +841,6 @@ def _normalized_service_rows(*, include_overlap: bool) -> pl.DataFrame:
         if include_overlap
         else [[], []]
     )
-    identifiers = (
-        [
-            [{"system": "provider_id", "value": "svc-123"}],
-            [{"system": "provider_id", "value": "svc-123"}],
-        ]
-        if include_overlap
-        else [[], []]
-    )
     return pl.DataFrame(
         {
             "entity_id": ["svc-a", "svc-b"],
@@ -824,7 +852,10 @@ def _normalized_service_rows(*, include_overlap: bool) -> pl.DataFrame:
             "websites": websites,
             "locations": locations,
             "taxonomies": [[{"code": "T1017"}], [{"code": "T1017"}]],
-            "identifiers": identifiers,
+            # Service rows produced by the DBT-fed runtime path do not currently
+            # carry identifiers, so tests should model that default shape unless
+            # they are intentionally exercising a synthetic edge case.
+            "identifiers": [[], []],
             "services_rollup": [
                 [{"name": "Case Management", "taxonomies": ["T1017"]}],
                 [{"name": "Case Management", "taxonomies": ["T1017"]}],

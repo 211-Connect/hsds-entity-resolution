@@ -83,7 +83,7 @@ class NlpConfig(BaseStrictModel):
 class MlConfig(BaseStrictModel):
     """ML gating controls for optional third scoring section."""
 
-    ml_enabled: bool = True
+    ml_enabled: bool = False
     ml_gate_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     ml_base_weight: float = Field(default=0.2, ge=0.0, le=0.6)
     ml_dynamic_weighting_enabled: bool = False
@@ -119,7 +119,7 @@ class ScoringConfig(BaseStrictModel):
 class MitigationConfig(BaseStrictModel):
     """Mitigation stage controls and thresholds."""
 
-    enabled: bool = True
+    enabled: bool = False
     min_embedding_similarity: float = Field(default=0.65, ge=0.0, le=1.0)
     require_reason_match: bool = True
 
@@ -206,18 +206,18 @@ def _build_deterministic_defaults(*, entity_type: EntityType) -> DeterministicCo
     """Return per-entity-type deterministic signal defaults."""
     if entity_type == "organization":
         return DeterministicConfig(
-            shared_email=DeterministicSignalConfig(weight=0.30),
+            shared_email=DeterministicSignalConfig(weight=0.22),
             shared_phone=DeterministicSignalConfig(weight=0.20),
-            shared_domain=DeterministicSignalConfig(weight=0.15),
-            shared_address=DeterministicSignalConfig(weight=0.20),
-            shared_identifier=DeterministicSignalConfig(weight=0.15),
+            shared_domain=DeterministicSignalConfig(weight=0.08),
+            shared_address=DeterministicSignalConfig(weight=0.25),
+            shared_identifier=DeterministicSignalConfig(weight=0.25),
         )
     return DeterministicConfig(
-        shared_email=DeterministicSignalConfig(weight=0.22),
-        shared_phone=DeterministicSignalConfig(weight=0.18),
-        shared_domain=DeterministicSignalConfig(weight=0.08),
-        shared_address=DeterministicSignalConfig(weight=0.12),
-        shared_identifier=DeterministicSignalConfig(weight=0.10),
+        shared_email=DeterministicSignalConfig(weight=0.16),
+        shared_phone=DeterministicSignalConfig(weight=0.22),
+        shared_domain=DeterministicSignalConfig(weight=0.04),
+        shared_address=DeterministicSignalConfig(weight=0.34),
+        shared_identifier=DeterministicSignalConfig(enabled=False, weight=0.0),
     )
 
 

@@ -61,6 +61,7 @@ def score_candidates(
     """Score candidate pairs and emit explainability reasons."""
     if candidate_pairs.is_empty():
         return _empty_result()
+    _log_scoring_configuration(config=config)
     entity_lookup = _build_entity_lookup(
         denormalized_organization=denormalized_organization,
         denormalized_service=denormalized_service,
@@ -178,7 +179,12 @@ def _pre_score_pair(
     entity_type = candidate["entity_type"]
     left = entity_lookup[(entity_type, candidate["entity_a_id"])]
     right = entity_lookup[(entity_type, candidate["entity_b_id"])]
-    det_score, det_reasons = _deterministic_score(left=left, right=right, config=config)
+    det_score, det_reasons = _deterministic_score(
+        left=left,
+        right=right,
+        entity_type=entity_type,
+        config=config,
+    )
     nlp_score, nlp_reasons = _nlp_score(
         left=left,
         right=right,
@@ -309,6 +315,7 @@ def _deterministic_score(
     *,
     left: dict[str, Any],
     right: dict[str, Any],
+    entity_type: str,
     config: EntityResolutionRunConfig,
 ) -> tuple[float, list[dict[str, Any]]]:
     """Compute deterministic overlap score using legacy-compatible normalization."""
@@ -343,12 +350,13 @@ def _deterministic_score(
             shared_address_right,
             config.scoring.deterministic.shared_address,
         ),
-        "shared_identifier": (
+    }
+    if entity_type == "organization":
+        channels["shared_identifier"] = (
             shared_identifier_left,
             shared_identifier_right,
             config.scoring.deterministic.shared_identifier,
-        ),
-    }
+        )
     contributions: list[dict[str, Any]] = []
     weighted_total = 0.0
     enabled_weight_total = 0.0
@@ -381,6 +389,29 @@ def _deterministic_score(
         weighted_sum=weighted_total,
         enabled_weight_sum=enabled_weight_total,
     ), contributions
+
+
+def _log_scoring_configuration(*, config: EntityResolutionRunConfig) -> None:
+    """Emit one INFO summary of active scoring semantics for this run scope."""
+    logger = get_dagster_logger()
+    entity_type = config.metadata.entity_type
+    deterministic_signals = [
+        "shared_email",
+        "shared_phone",
+        "shared_domain",
+        "shared_address",
+    ]
+    if entity_type == "organization":
+        deterministic_signals.append("shared_identifier")
+    logger.info(
+        "ℹ️ score_candidates_config entity_type=%s ml_enabled=%s"
+        " deterministic_signals=%s duplicate_threshold=%.2f maybe_threshold=%.2f",
+        entity_type,
+        config.scoring.ml.ml_enabled,
+        deterministic_signals,
+        config.scoring.duplicate_threshold,
+        config.scoring.maybe_threshold,
+    )
 
 
 def _signal_weighted_contribution(*, raw: float, signal_enabled: bool, weight: float) -> float:
@@ -523,10 +554,12 @@ def _nlp_score(
 def _compose_pre_ml_score(
     *, det_score: float, nlp_score: float, config: EntityResolutionRunConfig
 ) -> float:
-    """Compose deterministic and NLP sections into the pre-ML gate score."""
-    return (
-        det_score * config.scoring.deterministic_section_weight
-        + nlp_score * config.scoring.nlp_section_weight
+    """Compose deterministic and NLP sections on a normalized active-weight scale."""
+    return _compose_weighted_score(
+        components=[
+            (det_score, config.scoring.deterministic_section_weight),
+            (nlp_score, config.scoring.nlp_section_weight),
+        ]
     )
 
 
@@ -556,10 +589,27 @@ def _final_score(
     config: EntityResolutionRunConfig,
 ) -> float:
     """Compute final ensemble score for prediction thresholding."""
-    final_score = _compose_pre_ml_score(det_score=det_score, nlp_score=nlp_score, config=config)
-    if ml_score is None:
-        return final_score
-    return final_score + (ml_score * config.scoring.ml_section_weight)
+    components: list[tuple[float | None, float]] = [
+        (det_score, config.scoring.deterministic_section_weight),
+        (nlp_score, config.scoring.nlp_section_weight),
+    ]
+    if ml_score is not None:
+        components.append((ml_score, config.scoring.ml_section_weight))
+    return _compose_weighted_score(components=components)
+
+
+def _compose_weighted_score(*, components: list[tuple[float | None, float]]) -> float:
+    """Normalize weighted section scores across the sections that are actually active."""
+    weighted_sum = 0.0
+    active_weight_sum = 0.0
+    for score, weight in components:
+        if score is None or weight <= 0.0:
+            continue
+        weighted_sum += float(score) * weight
+        active_weight_sum += weight
+    if active_weight_sum <= 0.0:
+        return 0.0
+    return min(weighted_sum / active_weight_sum, 1.0)
 
 
 def _reason_row(
@@ -667,9 +717,11 @@ def _build_signal_analysis(
         ["pair_key", "pair_outcome", "deterministic_section_score", "nlp_section_score"]
     ).to_dicts():
         pk = str(row["pair_key"])
-        pre_ml = (
-            float(row["deterministic_section_score"]) * det_w
-            + float(row["nlp_section_score"]) * nlp_w
+        pre_ml = _compose_weighted_score(
+            components=[
+                (float(row["deterministic_section_score"]), det_w),
+                (float(row["nlp_section_score"]), nlp_w),
+            ]
         )
         present = {s for s in _STRONG_SIGNALS if pk in signal_index[s]}
         records.append(
