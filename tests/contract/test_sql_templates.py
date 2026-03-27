@@ -62,7 +62,7 @@ def test_required_sql_templates_exist_and_compile() -> None:
         assert template_path.exists(), f"Missing SQL template: {template_name}"
         rendered = template_path.read_text(encoding="utf-8").format(
             database="DEDUPLICATION",
-            schema="COMMON_EXPERIMENT",
+            schema="ER_RUNTIME",
             target_table="DUPLICATE_PAIRS",
             stage_table="STG_DUPLICATE_PAIRS",
             run_id="run-1",

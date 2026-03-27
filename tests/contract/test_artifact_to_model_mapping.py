@@ -15,8 +15,8 @@ from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.pipeline import run_incremental
 
 
-def test_artifacts_map_cleanly_to_common_models() -> None:
-    """Mapped rows should satisfy all `COMMON_SCHEMA_TABLE_MODELS` contracts."""
+def test_artifacts_map_cleanly_to_runtime_models() -> None:
+    """Mapped rows should satisfy all runtime row-model contracts."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-1",
         scope_id="scope-1",
@@ -25,7 +25,7 @@ def test_artifacts_map_cleanly_to_common_models() -> None:
     org = pl.DataFrame(
         {
             "entity_id": ["org-a", "org-b"],
-            "source_schema": ["COMMON_EXPERIMENT", "COMMON_EXPERIMENT"],
+            "source_schema": ["TENANT_A", "TENANT_B"],
             "name": ["Alpha Clinic", "Alpha Clinic"],
             "description": ["A", "A"],
             "emails": [["one@example.org"], ["one@example.org"]],
@@ -128,7 +128,7 @@ def test_artifacts_map_cleanly_to_common_models() -> None:
     assert mapped.table_frames["DUPLICATE_PAIR_SCORES"].height == 1
 
 
-def test_service_artifacts_with_taxonomy_term_ids_map_cleanly_to_common_models() -> None:
+def test_service_artifacts_with_taxonomy_term_ids_map_cleanly_to_runtime_models() -> None:
     """Service cache rows must retain taxonomy_term_id after normalization."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-1",
@@ -138,7 +138,7 @@ def test_service_artifacts_with_taxonomy_term_ids_map_cleanly_to_common_models()
     service = pl.DataFrame(
         {
             "entity_id": ["svc-a", "svc-b"],
-            "source_schema": ["COMMON_EXPERIMENT", "COMMON_EXPERIMENT"],
+            "source_schema": ["TENANT_A", "TENANT_B"],
             "name": ["Alpha Clinic", "Alpha Clinic"],
             "description": ["A", "A"],
             "emails": [["one@example.org"], ["one@example.org"]],

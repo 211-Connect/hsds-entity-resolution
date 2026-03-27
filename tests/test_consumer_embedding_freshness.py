@@ -27,7 +27,7 @@ class _FakeSessionManager:
     @property
     def schema(self) -> str:
         """Return fake schema name."""
-        return "COMMON_EXPERIMENT"
+        return "ER_RUNTIME"
 
     @contextmanager
     def connection(self) -> Iterator[object]:

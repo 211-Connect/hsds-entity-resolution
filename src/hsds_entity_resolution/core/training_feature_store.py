@@ -19,7 +19,7 @@ from hsds_entity_resolution.types.domain import EntityType
 from hsds_entity_resolution.types.rows import RawEntityRowInput
 
 RunSelectionPolicy = Literal["latest", "all"]
-_REVIEW_SOURCE = "COMMON_EXPERIMENT.DUPLICATE_PAIR_SCORES"
+_REVIEW_SOURCE = "ER_RUNTIME.DUPLICATE_PAIR_SCORES"
 
 
 @dataclass(frozen=True)
@@ -51,7 +51,7 @@ def materialize_training_features(
     limit: int | None = None,
 ) -> MaterializedTrainingFeatures:
     """Materialize reviewed typed pair features for one entity type."""
-    rows = _load_reviewed_pairs_from_common(
+    rows = _load_reviewed_pairs_from_runtime(
         cursor=cursor,
         database=database,
         schema=schema,
@@ -158,7 +158,7 @@ def materialize_training_features(
     )
 
 
-def _load_reviewed_pairs_from_common(
+def _load_reviewed_pairs_from_runtime(
     *,
     cursor: Any,
     database: str,
@@ -171,7 +171,7 @@ def _load_reviewed_pairs_from_common(
     source_run_id: str | None,
     limit: int | None,
 ) -> list[dict[str, Any]]:
-    """Load reviewed pair rows from COMMON_EXPERIMENT and any existing training mapping."""
+    """Load reviewed pair rows from ER_RUNTIME and any existing training mapping."""
     cache_table = (
         "DENORMALIZED_ORGANIZATION_CACHE"
         if entity_type == "organization"

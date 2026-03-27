@@ -228,3 +228,6 @@ _hsds_table_desc/
 .agents/skills/snowsql-investigation/
 .codacy/
 docs/
+!docs/
+docs/*
+!docs/deduplication-schema-audit.md

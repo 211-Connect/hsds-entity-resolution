@@ -39,7 +39,7 @@ def test_training_feature_job_registry_contains_il211_job() -> None:
     assert job.scope_id == "il211_regional"
     assert set(job.entity_types) == {"organization", "service"}
     assert job.review_database == "DEDUPLICATION"
-    assert job.review_schema == "COMMON_EXPERIMENT"
+    assert job.runtime_schema == "ER_RUNTIME"
     assert job.feature_schema_version == "ml-features-v1"
 
 

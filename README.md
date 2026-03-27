@@ -88,8 +88,8 @@ in two phases inside every Dagster job:
 
 | Phase | dbt select | What it does |
 | --- | --- | --- |
-| **Staging** (before Python ER) | `--select staging` | Materializes `stg_service_denormalized` and `stg_organization_denormalized` tables in `DEDUPLICATION.STAGING` from raw HSDS tables in `NORSE_STAGING` |
-| **Marts** (after Python ER stages artifacts) | `--select marts` | Incremental merge models upsert artifact staging rows into the final output tables in `DEDUPLICATION.COMMON_EXPERIMENT` |
+| **Staging** (before Python ER) | `--select staging` | Materializes `stg_service_denormalized` and `stg_organization_denormalized` tables in `DEDUPLICATION.ER_STAGING` from raw HSDS tables in `NORSE_STAGING` |
+| **Marts** (after Python ER stages artifacts) | `--select marts` | Incremental merge models upsert artifact staging rows into the final output tables in `DEDUPLICATION.ER_RUNTIME` |
 
 ### Do you need to run any dbt commands before startup?
 
@@ -122,10 +122,11 @@ references are consistent.
 | `SNOWFLAKE_PASSWORD` | — | Snowflake password (or use `SNOWFLAKE_PRIVATE_KEY_PATH`) |
 | `SNOWFLAKE_ROLE` | `SYSADMIN` | Snowflake role |
 | `SNOWFLAKE_WAREHOUSE` | — | Snowflake virtual warehouse |
-| `ER_TARGET_DATABASE` | `DEDUPLICATION` | Database for mart output tables |
-| `ER_TARGET_SCHEMA` | `COMMON_EXPERIMENT` | Schema for mart output tables |
+| `ER_TARGET_DATABASE` | `DEDUPLICATION` | Database for runtime and reconciliation tables |
+| `ER_RUNTIME_SCHEMA` | `ER_RUNTIME` | Schema for mart output tables |
+| `ER_INCREMENTAL_STATE_SCHEMA` | `ER_INCREMENTAL_STATE` | Schema for incremental state tables |
 | `ER_STAGING_DATABASE` | `DEDUPLICATION` | Database for persistent staging tables |
-| `ER_STAGING_SCHEMA` | `STAGING` | Schema for persistent staging tables |
+| `ER_STAGING_SCHEMA` | `ER_STAGING` | Schema for persistent staging tables |
 | `ER_HSDS_DATABASE` | `NORSE_STAGING` | Source HSDS database |
 
 ### dbt project structure
@@ -164,6 +165,12 @@ consumer/dbt/
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for pull request requirements, quality checks, and review
 expectations.
+
+## Additional Docs
+
+- [DEDUPLICATION schema audit](docs/deduplication-schema-audit.md)
+- [Review interface write path](docs/review-interface-write-path.md)
+- [Training and tuning notes](docs/training-and-tuning.md)
 
 ## Using This In Another Dagster Repo
 

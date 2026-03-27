@@ -1,4 +1,4 @@
-"""Tests for COMMON schema Pydantic models."""
+"""Tests for semantic dedupe table Pydantic models."""
 
 import json
 from pathlib import Path
@@ -30,7 +30,7 @@ def test_denormalized_organization_cache_row_accepts_nested_payloads() -> None:
             "SHORT_DESCRIPTION": None,
             "EMAIL": None,
             "WEBSITES": ["https://example.org"],
-            "SOURCE_SCHEMA": "COMMON_EXPERIMENT",
+            "SOURCE_SCHEMA": "TENANT_A",
             "ORIGINAL_ID": "123",
             "RESOURCE_WRITER_NAME": None,
             "ASSURED_DATE": None,
@@ -105,7 +105,7 @@ def test_data_quality_flag_row_validates_target_side_literal() -> None:
 
 
 def test_model_fields_align_with_common_experiment_schema_contract() -> None:
-    """Critical dedupe table models should match checked-in COMMON_EXPERIMENT columns."""
+    """Critical dedupe table models should match the checked-in schema contract."""
     schema_contract_path = Path("tests/contract/common_experiment_schema_contract.json")
     schema_contract = json.loads(schema_contract_path.read_text(encoding="utf-8"))
     tables_to_check = (

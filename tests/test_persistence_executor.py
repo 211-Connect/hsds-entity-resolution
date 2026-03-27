@@ -32,7 +32,7 @@ def test_execute_cleanup_runs_three_templates_in_order() -> None:
     results = executor.execute_cleanup(
         cursor=cursor,
         database="DEDUPLICATION",
-        schema="COMMON_EXPERIMENT",
+        schema="ER_RUNTIME",
         run_id="run-1",
         scope_id="scope-1",
         entity_type="organization",
@@ -54,7 +54,7 @@ def test_execute_cleanup_splits_multi_statement_templates() -> None:
     executor.execute_cleanup(
         cursor=cursor,
         database="DEDUPLICATION",
-        schema="COMMON_EXPERIMENT",
+        schema="ER_RUNTIME",
         run_id="run-1",
         scope_id="scope-1",
         entity_type="organization",
@@ -73,7 +73,7 @@ def test_execute_cleanup_delete_statements_are_individual() -> None:
     executor.execute_cleanup(
         cursor=cursor,
         database="DEDUPLICATION",
-        schema="COMMON_EXPERIMENT",
+        schema="ER_RUNTIME",
         run_id="run-1",
         scope_id="scope-1",
         entity_type="organization",

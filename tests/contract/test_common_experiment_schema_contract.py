@@ -1,4 +1,4 @@
-"""Contract tests that guard SQL/mapping against COMMON_EXPERIMENT schema drift."""
+"""Contract tests that guard SQL/mapping against runtime-schema drift."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ _DELETE_PATTERN = re.compile(
 
 
 def _load_schema_contract() -> dict[str, set[str]]:
-    """Load expected COMMON_EXPERIMENT table columns keyed by table name."""
+    """Load expected runtime table columns keyed by table name."""
     payload = json.loads(_SCHEMA_CONTRACT_PATH.read_text(encoding="utf-8"))
     return {table: set(columns) for table, columns in payload.items()}
 
@@ -40,7 +40,7 @@ def _render_template(template_name: str) -> str:
         .read_text(encoding="utf-8")
         .format(
             database="DEDUPLICATION",
-            schema="COMMON_EXPERIMENT",
+            schema="ER_RUNTIME",
             target_table="DUPLICATE_PAIRS",
             stage_table="STG_GENERIC",
             run_id="run-1",
@@ -71,7 +71,7 @@ def _sample_artifacts() -> dict[str, pl.DataFrame]:
     org = pl.DataFrame(
         {
             "entity_id": ["org-a", "org-b"],
-            "source_schema": ["COMMON_EXPERIMENT", "COMMON_EXPERIMENT"],
+            "source_schema": ["TENANT_A", "TENANT_B"],
             "name": ["Alpha Clinic", "Alpha Clinic"],
             "description": ["A", "A"],
             "emails": [["one@example.org"], ["one@example.org"]],

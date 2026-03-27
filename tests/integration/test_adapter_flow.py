@@ -20,7 +20,7 @@ class _FakeConfig:
     """Minimal config object used by fake session manager."""
 
     database: str = "DEDUPLICATION"
-    schema: str = "COMMON_EXPERIMENT"
+    schema: str = "ER_RUNTIME"
 
 
 class _FakeCursor:
@@ -115,7 +115,7 @@ def test_consumer_adapter_runs_end_to_end_with_fake_persistence(tmp_path: Path) 
         organization_entities=pl.DataFrame(
             {
                 "entity_id": ["org-a", "org-b"],
-                "source_schema": ["COMMON_EXPERIMENT", "COMMON_EXPERIMENT"],
+                "source_schema": ["TENANT_A", "TENANT_B"],
                 "name": ["Alpha", "Alpha Clinic"],
                 "description": ["A", "A clinic"],
                 "emails": [["one@example.org"], ["one@example.org"]],
@@ -141,7 +141,7 @@ def test_consumer_adapter_runs_end_to_end_with_fake_persistence(tmp_path: Path) 
     # MERGE operations are handled by dbt; the cursor sees only the three DELETE
     # cleanup templates that execute_cleanup runs after dbt.
     assert any(
-        cmd.startswith("DELETE FROM DEDUPLICATION.COMMON_EXPERIMENT.")
+        cmd.startswith("DELETE FROM DEDUPLICATION.ER_RUNTIME.")
         for cmd in session_manager.cursor.commands
     )
 
