@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
+import hsds_entity_resolution.core.generate_candidates as generate_candidates_module
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.generate_candidates import generate_candidates
 
@@ -162,6 +164,80 @@ def test_generate_candidates_keeps_domain_overlap_for_email_and_website() -> Non
     assert result.candidate_pairs.height == 1
     reason_codes = result.candidate_pairs.row(0, named=True)["candidate_reason_codes"]
     assert "shared_domain" in reason_codes
+
+
+def test_generate_candidates_logs_blocking_overview_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generate-candidates should emit one info summary for coarse blocking tuning."""
+
+    class _FakeLogger:
+        def __init__(self) -> None:
+            self.info_messages: list[str] = []
+            self.debug_messages: list[str] = []
+
+        def info(self, message: str, *args: object) -> None:
+            self.info_messages.append(message % args if args else message)
+
+        def debug(self, message: str, *args: object) -> None:
+            self.debug_messages.append(message % args if args else message)
+
+    logger = _FakeLogger()
+    monkeypatch.setattr(generate_candidates_module, "get_dagster_logger", lambda: logger)
+
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-overview",
+        scope_id="scope-overview",
+        entity_type="organization",
+    ).model_dump()
+    payload["blocking"]["max_candidates_per_entity"] = 1
+    config = EntityResolutionRunConfig.model_validate(payload)
+    organization_entities = pl.DataFrame(
+        {
+            "entity_id": ["org-a", "org-b", "org-c", "org-d"],
+            "entity_type": ["organization"] * 4,
+            "source_schema": ["IL211"] * 4,
+            "name": ["A", "B", "C", "D"],
+            "description": ["", "", "", ""],
+            "emails": [
+                ["shared@north.org"],
+                [],
+                ["shared@north.org"],
+                [],
+            ],
+            "phones": [[], [], [], []],
+            "websites": [[], [], [], []],
+            "locations": [[], [], [], []],
+            "taxonomies": [[], [], [], []],
+            "identifiers": [[], [], [], []],
+            "services_rollup": [[], [], [], []],
+            "organization_name": ["", "", "", ""],
+            "organization_id": ["", "", "", ""],
+            "embedding_vector": [
+                [1.0, 0.0],
+                [0.999, 0.001],
+                [0.998, 0.002],
+                [0.0, 1.0],
+            ],
+            "content_hash": ["hash-a", "hash-b", "hash-c", "hash-d"],
+        }
+    )
+
+    _ = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert logger.info_messages
+    overview_message = logger.info_messages[-1]
+    assert overview_message.startswith("ℹ️ generate_candidates_overview")
+    assert "threshold=0.750" in overview_message
+    assert "max_candidates_per_entity=1" in overview_message
+    assert "anchors_at_cap=1 (100.0%)" in overview_message
+    assert "heuristic=max_candidates_may_be_low" in overview_message
 
 
 def _organization_frame(

@@ -109,12 +109,18 @@ def run_incremental(
     logger.stage_advanced(stage="incremental_pipeline", processed=3, total=7)
 
     logger.stage_started(stage="apply_mitigation")
+    changed_entity_ids = set(
+        cleaned.changed_entities.filter(pl.col("delta_class").is_in(["added", "changed"]))
+        .get_column("entity_id")
+        .to_list()
+    )
     mitigated = apply_mitigation(
         scored_pairs=scored.scored_pairs,
         pair_reasons=scored.pair_reasons,
         removed_entity_ids=cleaned.removed_entity_ids,
         previous_pair_state_index=previous_pair_state_index,
         config=config,
+        changed_entity_ids=changed_entity_ids,
         no_change=cleaned.no_change and not explicit_backfill and not force_rescore,
         scope_removed=scope_removed,
     )

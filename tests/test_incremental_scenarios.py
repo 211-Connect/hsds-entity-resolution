@@ -58,9 +58,10 @@ def _config(
         scope_id=scope_id,
         entity_type="organization",
     )
-    if duplicate_threshold == 0.82 and maybe_threshold == 0.68 and min_embedding_similarity == 0.65:
-        return base
     raw = base.model_dump()
+    raw["mitigation"]["enabled"] = True
+    if duplicate_threshold == 0.82 and maybe_threshold == 0.68 and min_embedding_similarity == 0.65:
+        return EntityResolutionRunConfig.model_validate(raw)
     raw["scoring"]["duplicate_threshold"] = duplicate_threshold
     raw["scoring"]["maybe_threshold"] = maybe_threshold
     raw["mitigation"]["min_embedding_similarity"] = min_embedding_similarity
@@ -208,10 +209,11 @@ def _assert_not_removed(result: Any, pair_key: str) -> None:
 #
 # Both entities share email + phone + website and use IDENTICAL names so that:
 #   - NLP fuzzy similarity = 1.0  →  clears fuzzy_threshold (0.88)
-#   - det_score = (email 0.30 + phone 0.20 + domain 0.15) / 1.00 = 0.65
-#   - pre_ml = 0.65×0.4 + 1.0×0.3 = 0.56  →  clears ml_gate_threshold (0.55)
+#   - det_score = (email 0.22 + phone 0.20 + domain 0.08) / 1.00 = 0.50
+#   - pre_ml = 0.50×0.45 + 1.0×0.35 = 0.575  →  clears ml_gate_threshold (0.55)
 #   - ML fires via embedding_similarity ≈ 0.9997
-#   - final ≈ 0.56 + 0.9997×0.3 ≈ 0.86  →  duplicate band (> 0.82) ✓
+#   - final ≈ 0.575 + 0.9997×0.2 ≈ 0.775  →  below duplicate threshold unless
+#     stronger deterministic evidence such as address or identifier also matches
 # ---------------------------------------------------------------------------
 
 _PAIR_KEY = "org-a::org-b"
@@ -1354,6 +1356,49 @@ def test_s5c_explicit_backfill_with_unchanged_entities_regenerates_candidates() 
     )
 
     assert run2.candidate_pairs.height == run1.candidate_pairs.height
+    assert run2.removed_pair_ids.is_empty()
+    _assert_retained(run2, _PAIR_KEY)
+
+
+def test_s5d_partial_delta_preserves_unrelated_pair_state() -> None:
+    """S5-D: Changing an unrelated entity must not evict previously retained untouched pairs."""
+    scope_id = "s5d"
+    config = _config(team_id=f"team-{scope_id}", scope_id=scope_id)
+    baseline = _org_frame(
+        _standard_entity_a(),
+        _standard_entity_b(),
+        _entity_row("org-c", "South Clinic", emails=["south@clinic.org"], embedding=_EMB_ORTHO),
+    )
+
+    run1 = run_incremental(
+        organization_entities=baseline,
+        service_entities=pl.DataFrame(),
+        previous_entity_index=pl.DataFrame(),
+        previous_pair_state_index=pl.DataFrame(),
+        config=config,
+    )
+    _assert_retained(run1, _PAIR_KEY)
+
+    run2_entities = _org_frame(
+        _standard_entity_a(),
+        _standard_entity_b(),
+        _entity_row(
+            "org-c",
+            "South Clinic",
+            emails=["south@clinic.org"],
+            identifiers=[{"system": "npi", "value": "9999"}],
+            embedding=_EMB_ORTHO,
+        ),
+    )
+    run2 = run_incremental(
+        organization_entities=run2_entities,
+        service_entities=pl.DataFrame(),
+        previous_entity_index=_previous_entity_index(run1),
+        previous_pair_state_index=run1.pair_state_index,
+        config=config,
+    )
+
+    assert run2.candidate_pairs.is_empty()
     assert run2.removed_pair_ids.is_empty()
     _assert_retained(run2, _PAIR_KEY)
 

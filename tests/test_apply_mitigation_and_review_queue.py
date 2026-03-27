@@ -10,13 +10,20 @@ from hsds_entity_resolution.core.cluster_pairs import cluster_pairs
 from hsds_entity_resolution.core.materialize_review_queue import materialize_review_queue
 
 
+def _config_with_mitigation(*, team_id: str, scope_id: str) -> EntityResolutionRunConfig:
+    """Return default organization config with mitigation explicitly enabled."""
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id=team_id,
+        scope_id=scope_id,
+        entity_type="organization",
+    ).model_dump()
+    payload["mitigation"]["enabled"] = True
+    return EntityResolutionRunConfig.model_validate(payload)
+
+
 def test_apply_mitigation_emits_reconciliation_without_clusters() -> None:
     """Mitigation should emit removals and leave clustering to a dedicated stage."""
-    config = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-1",
-        scope_id="scope-1",
-        entity_type="organization",
-    )
+    config = _config_with_mitigation(team_id="team-1", scope_id="scope-1")
     scored_pairs = pl.DataFrame(
         {
             "pair_key": ["a::b", "a::c", "x::y"],
@@ -65,11 +72,7 @@ def test_apply_mitigation_emits_reconciliation_without_clusters() -> None:
 
 def test_apply_mitigation_counts_only_contributing_reasons() -> None:
     """Zero-weight reasons must not prevent low-evidence mitigation."""
-    config = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-1b",
-        scope_id="scope-1b",
-        entity_type="organization",
-    )
+    config = _config_with_mitigation(team_id="team-1b", scope_id="scope-1b")
     scored_pairs = pl.DataFrame(
         {
             "pair_key": ["a::b"],
@@ -113,11 +116,7 @@ def test_apply_mitigation_counts_only_contributing_reasons() -> None:
 
 def test_apply_mitigation_keeps_low_embedding_pair_with_contributing_reason() -> None:
     """Positive weighted evidence should satisfy reason-count gate."""
-    config = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-1c",
-        scope_id="scope-1c",
-        entity_type="organization",
-    )
+    config = _config_with_mitigation(team_id="team-1c", scope_id="scope-1c")
     scored_pairs = pl.DataFrame(
         {
             "pair_key": ["a::b"],
@@ -160,11 +159,7 @@ def test_apply_mitigation_keeps_low_embedding_pair_with_contributing_reason() ->
 
 def test_cluster_pairs_emits_stable_membership_hash_ids() -> None:
     """Correlation clustering should emit deterministic stable IDs from member sets."""
-    config = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-1a",
-        scope_id="scope-1a",
-        entity_type="organization",
-    )
+    config = _config_with_mitigation(team_id="team-1a", scope_id="scope-1a")
     finalized = pl.DataFrame(
         {
             "pair_key": ["a::b", "b::c", "a::c"],
@@ -202,11 +197,7 @@ def test_cluster_pairs_emits_stable_membership_hash_ids() -> None:
 
 def test_materialize_review_queue_filters_and_orders_pairs() -> None:
     """Review queue should exclude removed keys and sort by priority score."""
-    config = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-2",
-        scope_id="scope-2",
-        entity_type="organization",
-    )
+    config = _config_with_mitigation(team_id="team-2", scope_id="scope-2")
     finalized = pl.DataFrame(
         {
             "pair_key": ["a::b", "b::c", "d::e"],
@@ -323,6 +314,47 @@ def test_apply_mitigation_emits_candidate_lost_from_previous_state() -> None:
     assert result.removed_pair_ids.row(0, named=True) == {
         "pair_key": "a::b",
         "cleanup_reason": "candidate_lost",
+    }
+
+
+def test_apply_mitigation_preserves_unaffected_previous_pairs_during_partial_run() -> None:
+    """Partial rescoring should not delete retained pairs whose entities were untouched."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-partial",
+        scope_id="scope-partial",
+        entity_type="organization",
+    )
+    previous_pair_state_index = pl.DataFrame(
+        {
+            "pair_key": ["a::b", "c::d"],
+            "entity_a_id": ["a", "c"],
+            "entity_b_id": ["b", "d"],
+            "entity_type": ["organization", "organization"],
+            "scope_id": ["scope-partial", "scope-partial"],
+            "retained_flag": [True, True],
+        }
+    )
+    result = apply_mitigation(
+        scored_pairs=pl.DataFrame(),
+        pair_reasons=pl.DataFrame(),
+        removed_entity_ids=pl.DataFrame(),
+        previous_pair_state_index=previous_pair_state_index,
+        changed_entity_ids={"a"},
+        config=config,
+    )
+    assert result.removed_pair_ids.height == 1
+    assert result.removed_pair_ids.row(0, named=True) == {
+        "pair_key": "a::b",
+        "cleanup_reason": "candidate_lost",
+    }
+    assert result.pair_state_index.height == 1
+    assert result.pair_state_index.row(0, named=True) == {
+        "pair_key": "c::d",
+        "entity_a_id": "c",
+        "entity_b_id": "d",
+        "entity_type": "organization",
+        "scope_id": "scope-partial",
+        "retained_flag": True,
     }
 
 

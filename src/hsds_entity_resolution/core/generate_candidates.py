@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -32,6 +33,42 @@ _OVERLAP_CHANNEL_REASON_CODES: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class BlockingOverview:
+    """Summary diagnostics for one entity type's blocking pass."""
+
+    entity_type: str
+    changed_anchors: int
+    active_anchors: int
+    anchors_with_above_threshold: int
+    anchors_with_retained_candidates: int
+    anchors_at_candidate_cap: int
+    above_threshold_examined: int
+    overlap_blocked: int
+    pairs_kept: int
+
+
+@dataclass
+class BlockingDiagnosticsState:
+    """Mutable diagnostics collected while expanding candidates."""
+
+    channel_hits: dict[str, int]
+    above_threshold: int = 0
+    overlap_blocked: int = 0
+    first_anchor_id: str | None = None
+    first_anchor_schema: str | None = None
+    first_anchor_samples: list[dict[str, Any]] = field(default_factory=list)
+    first_anchor_done: bool = False
+
+
+@dataclass(frozen=True)
+class AnchorProcessingResult:
+    """Outcome of expanding one changed anchor."""
+
+    saw_above_threshold: bool
+    selected: int
+
+
 def generate_candidates(
     *,
     denormalized_organization: pl.DataFrame,
@@ -47,7 +84,7 @@ def generate_candidates(
     delta_entities = changed_entities.filter(pl.col("delta_class").is_in(["added", "changed"]))
     if delta_entities.is_empty() and not full_scope_rescore:
         return _empty_result()
-    org_pairs = _generate_for_entity_type(
+    org_pairs, org_overview = _generate_for_entity_type(
         frame=denormalized_organization,
         changed_entities=delta_entities,
         entity_type="organization",
@@ -55,7 +92,7 @@ def generate_candidates(
         full_scope_rescore=full_scope_rescore,
         progress_logger=progress_logger,
     )
-    service_pairs = _generate_for_entity_type(
+    service_pairs, service_overview = _generate_for_entity_type(
         frame=denormalized_service,
         changed_entities=delta_entities,
         entity_type="service",
@@ -64,6 +101,11 @@ def generate_candidates(
         progress_logger=progress_logger,
     )
     candidate_pairs = pl.concat([org_pairs, service_pairs], how="diagonal_relaxed")
+    _log_generate_candidates_overview(
+        overviews=[org_overview, service_overview],
+        candidate_pair_count=candidate_pairs.height,
+        config=config,
+    )
     summary = pl.DataFrame(
         {
             "candidate_count": [candidate_pairs.height],
@@ -81,11 +123,11 @@ def _generate_for_entity_type(
     config: EntityResolutionRunConfig,
     full_scope_rescore: bool,
     progress_logger: IncrementalProgressLogger | None = None,
-) -> pl.DataFrame:
+) -> tuple[pl.DataFrame, BlockingOverview]:
     """Generate candidates for one entity type and cap by anchor top-k."""
     type_frame = frame.filter(pl.col("entity_type") == entity_type)
     if type_frame.is_empty():
-        return _empty_candidate_frame()
+        return _empty_candidate_frame(), _empty_blocking_overview(entity_type=entity_type)
     changed_ids = set(
         changed_entities.filter(pl.col("entity_type") == entity_type)
         .get_column("entity_id")
@@ -94,14 +136,14 @@ def _generate_for_entity_type(
     if full_scope_rescore:
         changed_ids = set(type_frame.get_column("entity_id").to_list())
     if not changed_ids:
-        return _empty_candidate_frame()
+        return _empty_candidate_frame(), _empty_blocking_overview(entity_type=entity_type)
     entity_rows = type_frame.to_dicts()
     _log_entity_sample(entity_rows=entity_rows, entity_type=entity_type)
     matrix = np.array([row["embedding_vector"] for row in entity_rows], dtype=np.float32)
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     normalized_matrix = matrix / np.clip(norms, a_min=1e-8, a_max=None)
     id_to_idx = {row["entity_id"]: idx for idx, row in enumerate(entity_rows)}
-    pair_records = _collect_candidate_records(
+    pair_records, overview = _collect_candidate_records(
         entity_rows=entity_rows,
         entity_type=entity_type,
         normalized_matrix=normalized_matrix,
@@ -111,9 +153,10 @@ def _generate_for_entity_type(
         progress_logger=progress_logger,
     )
     if not pair_records:
-        return _empty_candidate_frame()
-    return frame_with_schema(pair_records, CANDIDATE_PAIR_SCHEMA).sort(
-        ["entity_a_id", "entity_b_id"]
+        return _empty_candidate_frame(), overview
+    return (
+        frame_with_schema(pair_records, CANDIDATE_PAIR_SCHEMA).sort(["entity_a_id", "entity_b_id"]),
+        overview,
     )
 
 
@@ -126,7 +169,7 @@ def _collect_candidate_records(
     changed_ids: set[str],
     config: EntityResolutionRunConfig,
     progress_logger: IncrementalProgressLogger | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], BlockingOverview]:
     """Collect canonical candidate pairs and deduplicate by pair key."""
     pairs_by_key: dict[str, dict[str, Any]] = {}
     threshold = config.blocking.similarity_threshold
@@ -134,15 +177,12 @@ def _collect_candidate_records(
     overlap_channels = config.blocking.overlap_prefilter_channels
     sorted_changed_ids = sorted(changed_ids)
     stage_name = f"generate_candidates.{entity_type}.anchors"
+    diagnostics = BlockingDiagnosticsState(channel_hits={ch: 0 for ch in overlap_channels})
 
-    # Diagnostic accumulators — collected across the full loop, emitted once after.
-    _diag_above_threshold: int = 0
-    _diag_overlap_blocked: int = 0
-    _diag_channel_hits: dict[str, int] = {ch: 0 for ch in overlap_channels}
-    _diag_first_anchor_id: str | None = None
-    _diag_first_anchor_schema: str | None = None
-    _diag_first_anchor_samples: list[dict[str, Any]] = []
-    _diag_first_anchor_done = False
+    anchors_with_above_threshold = 0
+    anchors_with_retained_candidates = 0
+    anchors_at_candidate_cap = 0
+    active_anchors = 0
 
     if progress_logger is not None:
         progress_logger.stage_started(stage=stage_name, total=len(sorted_changed_ids))
@@ -155,87 +195,35 @@ def _collect_candidate_records(
                     total=len(sorted_changed_ids),
                 )
             continue
+        active_anchors += 1
         anchor_idx = id_to_idx[entity_id]
         similarities = normalized_matrix @ normalized_matrix[anchor_idx]
         top_indices = np.argsort(similarities)[::-1].tolist()
-        selected = 0
-
-        capture_this_anchor = not _diag_first_anchor_done
-        if capture_this_anchor:
-            _diag_first_anchor_id = entity_id
-            _diag_first_anchor_schema = str(entity_rows[anchor_idx].get("source_schema") or "?")
-            _diag_first_anchor_done = True
-
-        for candidate_idx in top_indices:
-            if selected >= max_per_entity:
-                break
-            if candidate_idx == anchor_idx:
-                continue
-            similarity = float(similarities[candidate_idx])
-            if similarity < threshold:
-                # Cosine similarities are processed in descending order, so once a value
-                # drops below threshold all remaining candidates will also be below it.
-                break
-            _diag_above_threshold += 1
-            anchor = entity_rows[anchor_idx]
-            candidate = entity_rows[candidate_idx]
-            overlap_reasons = _collect_overlap_reason_codes(
-                anchor=anchor,
-                candidate=candidate,
-                overlap_channels=overlap_channels,
-            )
-            # Count per-channel fires across ALL above-threshold pairs.
-            for ch in overlap_channels:
-                if _OVERLAP_CHANNEL_REASON_CODES.get(ch, "") in overlap_reasons:
-                    _diag_channel_hits[ch] += 1
-            # Capture detailed snapshot for the first anchor's top-5 candidates only.
-            if capture_this_anchor and len(_diag_first_anchor_samples) < 5:
-                anchor_tax_codes = sorted(
-                    extract_entity_taxonomy_codes(entity=anchor, include_parent_codes=True)
-                )
-                cand_tax_codes = sorted(
-                    extract_entity_taxonomy_codes(entity=candidate, include_parent_codes=True)
-                )
-                anchor_locs = _extract_location_keys(entity=anchor)
-                cand_locs = _extract_location_keys(entity=candidate)
-                _diag_first_anchor_samples.append(
-                    {
-                        "sim": round(similarity, 4),
-                        "cand_schema": str(candidate.get("source_schema") or "?"),
-                        "anchor_tax": len(anchor.get("taxonomies") or []),
-                        "cand_tax": len(candidate.get("taxonomies") or []),
-                        "anchor_tax_codes": anchor_tax_codes[:4],
-                        "cand_tax_codes": cand_tax_codes[:4],
-                        "tax_intersect": sorted(set(anchor_tax_codes) & set(cand_tax_codes))[:3],
-                        "anchor_loc": len(anchor.get("locations") or []),
-                        "cand_loc": len(candidate.get("locations") or []),
-                        "anchor_loc_keys": sorted(
-                            {
-                                k
-                                for loc in (anchor.get("locations") or [])
-                                if isinstance(loc, dict)
-                                for k in loc
-                            }
-                        ),
-                        "loc_intersect": sorted(anchor_locs & cand_locs)[:3],
-                        "anchor_phones": len(anchor.get("phones") or []),
-                        "cand_phones": len(candidate.get("phones") or []),
-                        "overlap": overlap_reasons,
-                    }
-                )
-            if not overlap_reasons:
-                _diag_overlap_blocked += 1
-                continue
-            record = _to_candidate_record(
-                anchor=anchor,
-                candidate=candidate,
-                similarity=similarity,
-                overlap_reasons=overlap_reasons,
-            )
-            # Multiple changed anchors can surface the same pair; keyed replacement keeps
-            # one canonical record and prevents duplicate downstream scoring work.
-            pairs_by_key[record["pair_key"]] = record
-            selected += 1
+        anchor = entity_rows[anchor_idx]
+        capture_this_anchor = _start_first_anchor_capture(
+            diagnostics=diagnostics,
+            entity_id=entity_id,
+            anchor=anchor,
+        )
+        anchor_result = _collect_anchor_candidates(
+            anchor=anchor,
+            anchor_idx=anchor_idx,
+            entity_rows=entity_rows,
+            similarities=similarities,
+            top_indices=top_indices,
+            threshold=threshold,
+            max_per_entity=max_per_entity,
+            overlap_channels=overlap_channels,
+            pairs_by_key=pairs_by_key,
+            diagnostics=diagnostics,
+            capture_this_anchor=capture_this_anchor,
+        )
+        if anchor_result.saw_above_threshold:
+            anchors_with_above_threshold += 1
+        if anchor_result.selected > 0:
+            anchors_with_retained_candidates += 1
+        if anchor_result.selected >= max_per_entity:
+            anchors_at_candidate_cap += 1
         if progress_logger is not None:
             progress_logger.stage_advanced(
                 stage=stage_name,
@@ -250,16 +238,175 @@ def _collect_candidate_records(
     _log_blocking_summary(
         entity_type=entity_type,
         threshold=threshold,
-        above_threshold=_diag_above_threshold,
-        overlap_blocked=_diag_overlap_blocked,
+        above_threshold=diagnostics.above_threshold,
+        overlap_blocked=diagnostics.overlap_blocked,
         pairs_kept=len(pairs_by_key),
         overlap_channels=overlap_channels,
-        channel_hits=_diag_channel_hits,
-        first_anchor_id=_diag_first_anchor_id,
-        first_anchor_schema=_diag_first_anchor_schema,
-        first_anchor_samples=_diag_first_anchor_samples,
+        channel_hits=diagnostics.channel_hits,
+        first_anchor_id=diagnostics.first_anchor_id,
+        first_anchor_schema=diagnostics.first_anchor_schema,
+        first_anchor_samples=diagnostics.first_anchor_samples,
     )
-    return list(pairs_by_key.values())
+    return list(pairs_by_key.values()), BlockingOverview(
+        entity_type=entity_type,
+        changed_anchors=len(sorted_changed_ids),
+        active_anchors=active_anchors,
+        anchors_with_above_threshold=anchors_with_above_threshold,
+        anchors_with_retained_candidates=anchors_with_retained_candidates,
+        anchors_at_candidate_cap=anchors_at_candidate_cap,
+        above_threshold_examined=diagnostics.above_threshold,
+        overlap_blocked=diagnostics.overlap_blocked,
+        pairs_kept=len(pairs_by_key),
+    )
+
+
+def _empty_blocking_overview(*, entity_type: str) -> BlockingOverview:
+    """Return zeroed blocking diagnostics for one entity type."""
+    return BlockingOverview(
+        entity_type=entity_type,
+        changed_anchors=0,
+        active_anchors=0,
+        anchors_with_above_threshold=0,
+        anchors_with_retained_candidates=0,
+        anchors_at_candidate_cap=0,
+        above_threshold_examined=0,
+        overlap_blocked=0,
+        pairs_kept=0,
+    )
+
+
+def _start_first_anchor_capture(
+    *,
+    diagnostics: BlockingDiagnosticsState,
+    entity_id: str,
+    anchor: dict[str, Any],
+) -> bool:
+    """Initialize detailed sampling for the first expanded anchor only."""
+    if diagnostics.first_anchor_done:
+        return False
+    diagnostics.first_anchor_id = entity_id
+    diagnostics.first_anchor_schema = str(anchor.get("source_schema") or "?")
+    diagnostics.first_anchor_done = True
+    return True
+
+
+def _collect_anchor_candidates(
+    *,
+    anchor: dict[str, Any],
+    anchor_idx: int,
+    entity_rows: list[dict[str, Any]],
+    similarities: np.ndarray,
+    top_indices: list[int],
+    threshold: float,
+    max_per_entity: int,
+    overlap_channels: list[str],
+    pairs_by_key: dict[str, dict[str, Any]],
+    diagnostics: BlockingDiagnosticsState,
+    capture_this_anchor: bool,
+) -> AnchorProcessingResult:
+    """Expand one anchor and update shared diagnostics/candidate state."""
+    selected = 0
+    saw_above_threshold = False
+    for candidate_idx in top_indices:
+        if selected >= max_per_entity:
+            break
+        if candidate_idx == anchor_idx:
+            continue
+        similarity = float(similarities[candidate_idx])
+        if similarity < threshold:
+            break
+        saw_above_threshold = True
+        diagnostics.above_threshold += 1
+        candidate = entity_rows[candidate_idx]
+        overlap_reasons = _collect_overlap_reason_codes(
+            anchor=anchor,
+            candidate=candidate,
+            overlap_channels=overlap_channels,
+        )
+        _record_overlap_channel_hits(
+            diagnostics=diagnostics,
+            overlap_channels=overlap_channels,
+            overlap_reasons=overlap_reasons,
+        )
+        _capture_first_anchor_sample(
+            diagnostics=diagnostics,
+            anchor=anchor,
+            candidate=candidate,
+            similarity=similarity,
+            overlap_reasons=overlap_reasons,
+            capture_this_anchor=capture_this_anchor,
+        )
+        if not overlap_reasons:
+            diagnostics.overlap_blocked += 1
+            continue
+        record = _to_candidate_record(
+            anchor=anchor,
+            candidate=candidate,
+            similarity=similarity,
+            overlap_reasons=overlap_reasons,
+        )
+        pairs_by_key[record["pair_key"]] = record
+        selected += 1
+    return AnchorProcessingResult(saw_above_threshold=saw_above_threshold, selected=selected)
+
+
+def _record_overlap_channel_hits(
+    *,
+    diagnostics: BlockingDiagnosticsState,
+    overlap_channels: list[str],
+    overlap_reasons: list[str],
+) -> None:
+    """Count configured overlap-channel matches across above-threshold comparisons."""
+    for channel in overlap_channels:
+        if _OVERLAP_CHANNEL_REASON_CODES.get(channel, "") in overlap_reasons:
+            diagnostics.channel_hits[channel] += 1
+
+
+def _capture_first_anchor_sample(
+    *,
+    diagnostics: BlockingDiagnosticsState,
+    anchor: dict[str, Any],
+    candidate: dict[str, Any],
+    similarity: float,
+    overlap_reasons: list[str],
+    capture_this_anchor: bool,
+) -> None:
+    """Capture a compact diagnostic snapshot for the first anchor's top candidates."""
+    if not capture_this_anchor or len(diagnostics.first_anchor_samples) >= 5:
+        return
+    anchor_tax_codes = sorted(
+        extract_entity_taxonomy_codes(entity=anchor, include_parent_codes=True)
+    )
+    cand_tax_codes = sorted(
+        extract_entity_taxonomy_codes(entity=candidate, include_parent_codes=True)
+    )
+    anchor_locs = _extract_location_keys(entity=anchor)
+    cand_locs = _extract_location_keys(entity=candidate)
+    diagnostics.first_anchor_samples.append(
+        {
+            "sim": round(similarity, 4),
+            "cand_schema": str(candidate.get("source_schema") or "?"),
+            "anchor_tax": len(anchor.get("taxonomies") or []),
+            "cand_tax": len(candidate.get("taxonomies") or []),
+            "anchor_tax_codes": anchor_tax_codes[:4],
+            "cand_tax_codes": cand_tax_codes[:4],
+            "tax_intersect": sorted(set(anchor_tax_codes) & set(cand_tax_codes))[:3],
+            "anchor_loc": len(anchor.get("locations") or []),
+            "cand_loc": len(candidate.get("locations") or []),
+            "anchor_loc_keys": sorted(
+                {
+                    key
+                    for location in (anchor.get("locations") or [])
+                    if isinstance(location, dict)
+                    for key in location
+                }
+            ),
+            "loc_intersect": sorted(anchor_locs & cand_locs)[:3],
+            "anchor_phones": len(anchor.get("phones") or []),
+            "cand_phones": len(candidate.get("phones") or []),
+            "overlap": overlap_reasons,
+        }
+    )
 
 
 def _log_entity_sample(*, entity_rows: list[dict[str, Any]], entity_type: str) -> None:
@@ -346,6 +493,106 @@ def _log_blocking_summary(
         len(first_anchor_samples),
         sample_lines if sample_lines else "  (no above-threshold candidates for first anchor)",
     )
+
+
+def _log_generate_candidates_overview(
+    *,
+    overviews: list[BlockingOverview],
+    candidate_pair_count: int,
+    config: EntityResolutionRunConfig,
+) -> None:
+    """Emit one INFO-level overview for coarse blocking-tuning evaluation."""
+    _log = get_dagster_logger()
+    threshold = config.blocking.similarity_threshold
+    max_per_entity = config.blocking.max_candidates_per_entity
+    active_anchors = sum(overview.active_anchors for overview in overviews)
+    anchors_with_above_threshold = sum(
+        overview.anchors_with_above_threshold for overview in overviews
+    )
+    anchors_with_retained = sum(overview.anchors_with_retained_candidates for overview in overviews)
+    anchors_at_cap = sum(overview.anchors_at_candidate_cap for overview in overviews)
+    above_threshold_examined = sum(overview.above_threshold_examined for overview in overviews)
+    overlap_blocked = sum(overview.overlap_blocked for overview in overviews)
+    no_above_threshold = max(0, active_anchors - anchors_with_above_threshold)
+    above_threshold_but_no_retained = max(0, anchors_with_above_threshold - anchors_with_retained)
+    overview_chunks = ", ".join(_format_blocking_overview_chunk(overview) for overview in overviews)
+    heuristic_signals = _blocking_heuristic_signals(
+        active_anchors=active_anchors,
+        no_above_threshold=no_above_threshold,
+        anchors_at_cap=anchors_at_cap,
+        above_threshold_but_no_retained=above_threshold_but_no_retained,
+    )
+    _log.info(
+        "ℹ️ generate_candidates_overview threshold=%.3f max_candidates_per_entity=%d"
+        " candidate_pairs=%d active_anchors=%d anchors_with_retained=%d (%.1f%%)"
+        " anchors_with_no_above_threshold=%d (%.1f%%)"
+        " anchors_above_threshold_but_no_retained=%d (%.1f%%)"
+        " anchors_at_cap=%d (%.1f%%)"
+        " overlap_blocked=%d/%d (%.1f%% of examined above-threshold)"
+        " heuristic=%s per_type=[%s]",
+        threshold,
+        max_per_entity,
+        candidate_pair_count,
+        active_anchors,
+        anchors_with_retained,
+        _percent(anchors_with_retained, active_anchors),
+        no_above_threshold,
+        _percent(no_above_threshold, active_anchors),
+        above_threshold_but_no_retained,
+        _percent(above_threshold_but_no_retained, active_anchors),
+        anchors_at_cap,
+        _percent(anchors_at_cap, active_anchors),
+        overlap_blocked,
+        above_threshold_examined,
+        _percent(overlap_blocked, above_threshold_examined),
+        heuristic_signals,
+        overview_chunks,
+    )
+
+
+def _format_blocking_overview_chunk(overview: BlockingOverview) -> str:
+    """Render one compact per-entity-type overview chunk."""
+    no_above_threshold = max(0, overview.active_anchors - overview.anchors_with_above_threshold)
+    above_threshold_but_no_retained = max(
+        0,
+        overview.anchors_with_above_threshold - overview.anchors_with_retained_candidates,
+    )
+    return (
+        f"{overview.entity_type}: active={overview.active_anchors}"
+        f" retained={overview.anchors_with_retained_candidates}"
+        f" no_above_threshold={no_above_threshold}"
+        f" above_threshold_but_no_retained={above_threshold_but_no_retained}"
+        f" at_cap={overview.anchors_at_candidate_cap}"
+    )
+
+
+def _blocking_heuristic_signals(
+    *,
+    active_anchors: int,
+    no_above_threshold: int,
+    anchors_at_cap: int,
+    above_threshold_but_no_retained: int,
+) -> str:
+    """Return a coarse interpretation string for tuning blocking settings."""
+    if active_anchors <= 0:
+        return "no_active_anchors"
+    signals: list[str] = []
+    if _percent(no_above_threshold, active_anchors) >= 20.0:
+        signals.append("threshold_may_be_high")
+    if _percent(above_threshold_but_no_retained, active_anchors) >= 20.0:
+        signals.append("overlap_prefilter_may_be_strict")
+    if _percent(anchors_at_cap, active_anchors) >= 20.0:
+        signals.append("max_candidates_may_be_low")
+    if not signals:
+        return "no_obvious_blocking_pressure"
+    return ",".join(signals)
+
+
+def _percent(numerator: int, denominator: int) -> float:
+    """Return a rounded percentage without division-by-zero."""
+    if denominator <= 0:
+        return 0.0
+    return round((numerator / denominator) * 100.0, 1)
 
 
 def _collect_overlap_reason_codes(
