@@ -103,6 +103,10 @@ PAIR_REASONS_SCHEMA: dict[str, Any] = {
     "raw_contribution": pl.Float64,
     "weighted_contribution": pl.Float64,
     "signal_weight": pl.Float64,
+    "matched_value": pl.String,
+    "entity_a_value": pl.String,
+    "entity_b_value": pl.String,
+    "similarity_score": pl.Float64,
 }
 
 # Used by evidence_policy.count_contributing_reasons as the empty-fallback schema.

@@ -23,6 +23,7 @@ REQUIRED_SQL_TEMPLATES = [
     "merge_duplicate_clusters.sql",
     "merge_duplicate_cluster_pairs.sql",
     "delete_cascade_removed_pairs.sql",
+    "delete_orphan_duplicate_reasons.sql",
     "recompute_cluster_aggregates.sql",
 ]
 

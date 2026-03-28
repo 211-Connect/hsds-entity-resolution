@@ -28,6 +28,10 @@ class PairReasonRow(TypedDict):
     raw_contribution: float
     weighted_contribution: float
     signal_weight: float
+    matched_value: str | None
+    entity_a_value: str | None
+    entity_b_value: str | None
+    similarity_score: float | None
 
 
 class ScoredPairRow(TypedDict):

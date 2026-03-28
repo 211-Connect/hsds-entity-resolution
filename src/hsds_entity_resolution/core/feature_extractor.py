@@ -11,7 +11,10 @@ import os
 from typing import Dict, Any, List, Set, Optional
 import joblib
 
-from hsds_entity_resolution.core.taxonomy_utils import extract_entity_taxonomy_codes
+from hsds_entity_resolution.core.taxonomy_utils import (
+    extract_entity_taxonomy_codes,
+    taxonomy_hierarchy_levels,
+)
 try:
     __import__("sentence_transformers")
     SENTENCE_TRANSFORMERS_AVAILABLE = True
@@ -732,28 +735,7 @@ class FeatureExtractor:
         """Extracts hierarchical prefixes from taxonomy codes."""
         prefixes = set()
         for code in codes:
-            # Add exact code
-            prefixes.add(code)
-
-            # 1. First letter
-            if len(code) > 0:
-                prefixes.add(code[0])
-
-            # 2. Characters before first hyphen
-            if '-' in code:
-                parts = code.split('-')
-                if parts[0]:
-                    prefixes.add(parts[0])
-                    curr = parts[0]
-                    for part in parts[1:]:
-                        curr = f"{curr}-{part}"
-                        prefixes.add(curr)
-
-            # 3. Handle 'B', 'BD' logic specifically if no hyphen
-            if code.isalpha() and len(code) > 1:
-                for i in range(1, len(code)):
-                    prefixes.add(code[:i])
-
+            prefixes.update(taxonomy_hierarchy_levels(code))
         return prefixes
 
     def _virtual_service_features(
@@ -915,7 +897,7 @@ class FeatureExtractor:
                 raw_val = 0.0
 
             # Skip circular features
-            if signal_name in ['lightgbm_model', 'lightgbm_model_similarity']:
+            if signal_name in ['lightgbm_model', 'lightgbm_model_similarity', 'ml_similarity']:
                 continue
 
             features[signal_name] = raw_val

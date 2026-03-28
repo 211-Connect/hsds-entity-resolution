@@ -561,8 +561,8 @@ and are passed via `constants_overrides` in the Dagster component's YAML config.
 | Parameter | Default | Controls |
 |---|---|---|
 | `blocking.similarity_threshold` | `0.75` | Cosine similarity floor for candidate generation. Lower = more candidates = higher recall at higher compute cost. |
-| `blocking.max_candidates_per_entity` | `50` | Max neighbors per anchor. |
-| `blocking.overlap_prefilter_channels` | `[email, phone, website, taxonomy, location]` | Which contact channels a pair must share to pass blocking. Remove a channel to be less strict. |
+| `blocking.max_candidates_per_entity` | `50` (org) / `125` (service) | Max neighbors per anchor. |
+| `blocking.overlap_prefilter_channels` | `[email, phone, website, taxonomy, location]` | Which overlap channels a pair may share to pass blocking. Taxonomy matching uses HSIS parent expansion, so same-tree codes can pass even when levels differ. |
 
 ### Scoring (section weights must sum to 1.0)
 
@@ -579,11 +579,12 @@ and are passed via `constants_overrides` in the Dagster component's YAML config.
 
 | Signal | Org weight | Service weight |
 |---|---|---|
-| `shared_email` | `0.30` | `0.22` |
-| `shared_phone` | `0.20` | `0.18` |
-| `shared_domain` | `0.15` | `0.08` |
-| `shared_address` | `0.20` | `0.12` |
-| `shared_identifier` | `0.15` | `0.10` |
+| `shared_email` | `0.22` | `0.16` |
+| `shared_phone` | `0.20` | `0.22` |
+| `shared_domain` | `0.06` | `0.04` |
+| `shared_taxonomy` | `0.08` | `0.12` |
+| `shared_address` | `0.25` | `0.34` |
+| `shared_identifier` | `0.25` | `0.00` |
 
 Each signal also has an `enabled: bool` flag.
 

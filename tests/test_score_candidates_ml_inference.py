@@ -30,7 +30,15 @@ def test_score_candidates_uses_model_score_when_available(monkeypatch) -> None:
 
     result = score_candidates_module.score_candidates(
         candidate_pairs=_candidate_pairs(),
-        denormalized_organization=_normalized_org_rows(),
+        denormalized_organization=_normalized_org_rows(
+            "Alpha Health",
+            "Alpha Health Services",
+            include_overlap=False,
+            left_locations=[],
+            right_locations=[],
+            left_identifiers=[],
+            right_identifiers=[],
+        ),
         denormalized_service=pl.DataFrame(),
         config=config,
     )
@@ -60,7 +68,15 @@ def test_score_candidates_falls_back_to_embedding_similarity(monkeypatch) -> Non
 
     result = score_candidates_module.score_candidates(
         candidate_pairs=_candidate_pairs(),
-        denormalized_organization=_normalized_org_rows(),
+        denormalized_organization=_normalized_org_rows(
+            "Alpha Health",
+            "Alpha Health Services",
+            include_overlap=False,
+            left_locations=[],
+            right_locations=[],
+            left_identifiers=[],
+            right_identifiers=[],
+        ),
         denormalized_service=pl.DataFrame(),
         config=config,
     )
@@ -259,7 +275,10 @@ def test_score_candidates_emits_shared_address_reason_on_canonical_match() -> No
     )
 
     reasons = result.pair_reasons.to_dicts()
-    assert any(reason["match_type"] == "shared_address" for reason in reasons)
+    shared_address = next(reason for reason in reasons if reason["match_type"] == "shared_address")
+    assert shared_address["matched_value"] == "123 north main street, chicago, il, 60601"
+    assert shared_address["entity_a_value"] == "123 north main street, chicago, il, 60601"
+    assert shared_address["entity_b_value"] == "123 north main street, chicago, il, 60601"
 
 
 def test_score_candidates_omits_shared_address_reason_on_mismatch() -> None:
@@ -315,7 +334,151 @@ def test_score_candidates_emits_shared_identifier_reason_for_system_value_match(
     )
 
     reasons = result.pair_reasons.to_dicts()
-    assert any(reason["match_type"] == "shared_identifier" for reason in reasons)
+    shared_identifier = next(
+        reason for reason in reasons if reason["match_type"] == "shared_identifier"
+    )
+    assert shared_identifier["matched_value"] == "npi|123456"
+    assert shared_identifier["entity_a_value"] == "npi|123456"
+    assert shared_identifier["entity_b_value"] == "npi|123456"
+
+
+def test_score_candidates_emits_name_and_ml_explainability_fields(monkeypatch) -> None:
+    """Name and ML reasons should retain the compared values and similarity score."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-ml",
+        scope_id="scope-ml",
+        entity_type="organization",
+    )
+    payload = config.model_dump()
+    payload["scoring"]["ml"]["ml_enabled"] = True
+    payload["scoring"]["ml"]["ml_gate_threshold"] = 0.0
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    monkeypatch.setattr(
+        score_candidates_module,
+        "compute_nlp_score",
+        lambda **_: (0.9, 0.9),
+    )
+
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_candidate_pairs(),
+        denormalized_organization=_normalized_org_rows(
+            "Alpha Health",
+            "Alpha Health Services",
+            include_overlap=False,
+            left_locations=[],
+            right_locations=[],
+            left_identifiers=[],
+            right_identifiers=[],
+        ),
+        denormalized_service=pl.DataFrame(),
+        config=config,
+    )
+
+    reasons = result.pair_reasons.to_dicts()
+    name_reason = next(reason for reason in reasons if reason["match_type"] == "name_similarity")
+    ml_reason = next(reason for reason in reasons if reason["match_type"] == "ml_similarity")
+
+    assert name_reason["entity_a_value"] == "alpha health"
+    assert name_reason["entity_b_value"] == "alpha health services"
+    assert name_reason["similarity_score"] == pytest.approx(name_reason["raw_contribution"])
+    assert ml_reason["matched_value"] is None
+    assert ml_reason["entity_a_value"] is None
+    assert ml_reason["entity_b_value"] is None
+    assert ml_reason["similarity_score"] == pytest.approx(0.95)
+
+
+def test_score_candidates_emits_exact_taxonomy_reason_with_full_score() -> None:
+    """Exact HSIS taxonomy matches should contribute the full taxonomy score."""
+    config = _config_with_taxonomy_only()
+    normalized = _normalized_org_rows(
+        include_overlap=False,
+        left_locations=[],
+        right_locations=[],
+        left_identifiers=[],
+        right_identifiers=[],
+        left_taxonomies=[{"code": "BD"}],
+        right_taxonomies=[{"code": "BD"}],
+    )
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_candidate_pairs(),
+        denormalized_organization=normalized,
+        denormalized_service=pl.DataFrame(),
+        config=config,
+    )
+
+    taxonomy_reason = next(
+        reason
+        for reason in result.pair_reasons.to_dicts()
+        if reason["match_type"] == "shared_taxonomy"
+    )
+    assert taxonomy_reason["matched_value"] == "bd"
+    assert taxonomy_reason["similarity_score"] == pytest.approx(1.0)
+    assert result.scored_pairs.row(0, named=True)["deterministic_section_score"] == pytest.approx(
+        1.0
+    )
+
+
+def test_score_candidates_emits_parent_taxonomy_reason_with_decay() -> None:
+    """Parent-child HSIS taxonomy matches should decay by one level."""
+    config = _config_with_taxonomy_only()
+    normalized = _normalized_org_rows(
+        include_overlap=False,
+        left_locations=[],
+        right_locations=[],
+        left_identifiers=[],
+        right_identifiers=[],
+        left_taxonomies=[{"code": "BD"}],
+        right_taxonomies=[{"code": "B"}],
+    )
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_candidate_pairs(),
+        denormalized_organization=normalized,
+        denormalized_service=pl.DataFrame(),
+        config=config,
+    )
+
+    taxonomy_reason = next(
+        reason
+        for reason in result.pair_reasons.to_dicts()
+        if reason["match_type"] == "shared_taxonomy"
+    )
+    assert taxonomy_reason["matched_value"] == "b"
+    assert taxonomy_reason["similarity_score"] == pytest.approx(0.7)
+    assert result.scored_pairs.row(0, named=True)["deterministic_section_score"] == pytest.approx(
+        0.7
+    )
+
+
+def test_score_candidates_emits_grandparent_taxonomy_reason_with_decay() -> None:
+    """Grandparent HSIS taxonomy matches should decay by two levels."""
+    config = _config_with_taxonomy_only()
+    normalized = _normalized_org_rows(
+        include_overlap=False,
+        left_locations=[],
+        right_locations=[],
+        left_identifiers=[],
+        right_identifiers=[],
+        left_taxonomies=[{"code": "BD-1800"}],
+        right_taxonomies=[{"code": "B"}],
+    )
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_candidate_pairs(),
+        denormalized_organization=normalized,
+        denormalized_service=pl.DataFrame(),
+        config=config,
+    )
+
+    taxonomy_reason = next(
+        reason
+        for reason in result.pair_reasons.to_dicts()
+        if reason["match_type"] == "shared_taxonomy"
+    )
+    assert taxonomy_reason["matched_value"] == "b"
+    assert taxonomy_reason["similarity_score"] == pytest.approx(0.49)
+    assert result.scored_pairs.row(0, named=True)["deterministic_section_score"] == pytest.approx(
+        0.49
+    )
 
 
 def test_score_candidates_omits_shared_identifier_when_system_differs() -> None:
@@ -432,7 +595,7 @@ def test_score_candidates_normalizes_deterministic_score_when_signal_disabled() 
         config=config,
     )
 
-    expected = 0.20 / 0.75
+    expected = 0.20 / 0.81
     assert result.scored_pairs.row(0, named=True)["deterministic_section_score"] == pytest.approx(
         expected
     )
@@ -665,6 +828,83 @@ def test_score_candidates_classifies_threshold_bands_and_review_eligibility(
     assert summary["retained_count"] == 2
 
 
+def test_shadow_confidence_preserves_legacy_score_and_avoids_trivial_saturation() -> None:
+    """Shadow confidence should compress strong evidence while leaving legacy score unchanged."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-shadow",
+        scope_id="scope-shadow",
+        entity_type="service",
+    )
+    payload = config.model_dump()
+    payload["scoring"]["ml"]["ml_enabled"] = False
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_service_candidate_pairs(),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=_normalized_service_rows(include_overlap=True),
+        config=config,
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    assert row["final_score"] == pytest.approx(1.0)
+    assert row["legacy_confidence_score"] == pytest.approx(row["final_score"])
+    assert row["shadow_confidence_score"] < 1.0
+    assert row["shadow_confidence_score"] == pytest.approx(0.7369158958)
+    assert row["shadow_log_odds"] == pytest.approx(1.03)
+    assert row["calibration_version"] == "shadow-log-odds-v1"
+
+
+def test_shadow_confidence_increases_with_stronger_evidence() -> None:
+    """Shadow confidence should increase monotonically as corroborating evidence is added."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-shadow",
+        scope_id="scope-shadow",
+        entity_type="service",
+    )
+    payload = config.model_dump()
+    payload["scoring"]["ml"]["ml_enabled"] = False
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    weaker = score_candidates_module.score_candidates(
+        candidate_pairs=_service_candidate_pairs(),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=_normalized_service_rows(include_overlap=False),
+        config=config,
+    ).scored_pairs.row(0, named=True)
+    stronger = score_candidates_module.score_candidates(
+        candidate_pairs=_service_candidate_pairs(),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=_normalized_service_rows(include_overlap=True),
+        config=config,
+    ).scored_pairs.row(0, named=True)
+
+    assert weaker["legacy_confidence_score"] < stronger["legacy_confidence_score"]
+    assert weaker["shadow_confidence_score"] < stronger["shadow_confidence_score"]
+
+
+def test_shadow_confidence_can_be_disabled_to_match_legacy_score() -> None:
+    """Disabled calibration should fall back to the legacy confidence score."""
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-shadow",
+        scope_id="scope-shadow",
+        entity_type="organization",
+    ).model_dump()
+    payload["scoring"]["ml"]["ml_enabled"] = False
+    payload["scoring"]["calibration"]["enabled"] = False
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_candidate_pairs(),
+        denormalized_organization=_normalized_org_rows(include_overlap=True),
+        denormalized_service=pl.DataFrame(),
+        config=config,
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    assert row["shadow_confidence_score"] == pytest.approx(row["legacy_confidence_score"])
+
+
 def _config_with_nlp_overrides(**nlp_overrides: float | str) -> EntityResolutionRunConfig:
     """Return default run config with NLP-specific override values."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
@@ -700,8 +940,24 @@ def _config_for_address_flip() -> EntityResolutionRunConfig:
     payload["scoring"]["deterministic"]["shared_email"]["weight"] = 0.0
     payload["scoring"]["deterministic"]["shared_phone"]["weight"] = 0.0
     payload["scoring"]["deterministic"]["shared_domain"]["weight"] = 0.0
+    payload["scoring"]["deterministic"]["shared_taxonomy"]["weight"] = 0.0
     payload["scoring"]["deterministic"]["shared_identifier"]["weight"] = 0.0
     payload["scoring"]["deterministic"]["shared_address"]["weight"] = 0.6
+    return EntityResolutionRunConfig.model_validate(payload)
+
+
+def _config_with_taxonomy_only() -> EntityResolutionRunConfig:
+    """Return config where taxonomy is the only active deterministic signal."""
+    payload = _config_with_ml_disabled().model_dump()
+    payload["scoring"]["deterministic_section_weight"] = 1.0
+    payload["scoring"]["nlp_section_weight"] = 0.0
+    payload["scoring"]["ml_section_weight"] = 0.0
+    payload["scoring"]["deterministic"]["shared_email"]["weight"] = 0.0
+    payload["scoring"]["deterministic"]["shared_phone"]["weight"] = 0.0
+    payload["scoring"]["deterministic"]["shared_domain"]["weight"] = 0.0
+    payload["scoring"]["deterministic"]["shared_taxonomy"]["weight"] = 0.6
+    payload["scoring"]["deterministic"]["shared_address"]["weight"] = 0.0
+    payload["scoring"]["deterministic"]["shared_identifier"]["weight"] = 0.0
     return EntityResolutionRunConfig.model_validate(payload)
 
 
@@ -736,6 +992,8 @@ def _normalized_org_rows(
     right_phones: list[str] | None = None,
     left_websites: list[str] | None = None,
     right_websites: list[str] | None = None,
+    left_taxonomies: list[dict[str, str]] | None = None,
+    right_taxonomies: list[dict[str, str]] | None = None,
 ) -> pl.DataFrame:
     """Return normalized organization rows with all lookup columns required for scoring."""
     emails = (
@@ -774,6 +1032,22 @@ def _normalized_org_rows(
         left_identifiers if left_identifiers is not None else [{"system": "npi", "value": "123"}],
         right_identifiers if right_identifiers is not None else [{"system": "npi", "value": "123"}],
     ]
+    resolved_taxonomies = [
+        left_taxonomies
+        if left_taxonomies is not None
+        else ([{"code": "261Q00000X"}] if include_overlap else []),
+        right_taxonomies
+        if right_taxonomies is not None
+        else ([{"code": "261Q00000X"}] if include_overlap else []),
+    ]
+    resolved_services_rollup = (
+        [
+            [{"name": "Case Management", "taxonomies": ["T1017"]}],
+            [{"name": "Case Management", "taxonomies": ["T1017"]}],
+        ]
+        if include_overlap
+        else [[], []]
+    )
     return pl.DataFrame(
         {
             "entity_id": ["org-a", "org-b"],
@@ -784,12 +1058,9 @@ def _normalized_org_rows(
             "phones": phones,
             "websites": websites,
             "locations": resolved_locations,
-            "taxonomies": [[{"code": "261Q00000X"}], [{"code": "261Q00000X"}]],
+            "taxonomies": resolved_taxonomies,
             "identifiers": resolved_identifiers,
-            "services_rollup": [
-                [{"name": "Case Management", "taxonomies": ["T1017"]}],
-                [{"name": "Case Management", "taxonomies": ["T1017"]}],
-            ],
+            "services_rollup": resolved_services_rollup,
             "organization_name": ["", ""],
             "organization_id": ["", ""],
             "embedding_vector": [[0.9, 0.1], [0.92, 0.08]],

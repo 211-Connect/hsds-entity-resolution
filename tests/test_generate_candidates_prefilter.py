@@ -10,8 +10,8 @@ from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.generate_candidates import generate_candidates
 
 
-def test_generate_candidates_keeps_taxonomy_only_overlap() -> None:
-    """Taxonomy-only overlap should pass prefilter for candidate retention."""
+def test_generate_candidates_rejects_taxonomy_only_overlap() -> None:
+    """Taxonomy-only overlap should not pass without non-taxonomy evidence."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-taxonomy",
         scope_id="scope-taxonomy",
@@ -29,13 +29,33 @@ def test_generate_candidates_keeps_taxonomy_only_overlap() -> None:
         explicit_backfill=False,
     )
 
-    assert result.candidate_pairs.height == 1
-    reason_codes = result.candidate_pairs.row(0, named=True)["candidate_reason_codes"]
-    assert "shared_taxonomy" in reason_codes
+    assert result.candidate_pairs.is_empty()
 
 
-def test_generate_candidates_keeps_location_only_overlap() -> None:
-    """Location-only overlap should pass prefilter for candidate retention."""
+def test_generate_candidates_keeps_parent_taxonomy_overlap() -> None:
+    """Parent-child HSIS taxonomy matches still need non-taxonomy evidence."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-taxonomy-parent",
+        scope_id="scope-taxonomy-parent",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[{"code": "BD"}], [{"code": "B"}]],
+        locations=[[], []],
+    )
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.is_empty()
+
+
+def test_generate_candidates_rejects_location_only_overlap() -> None:
+    """Location-only overlap should not pass without taxonomy evidence."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-location",
         scope_id="scope-location",
@@ -56,13 +76,11 @@ def test_generate_candidates_keeps_location_only_overlap() -> None:
         explicit_backfill=False,
     )
 
-    assert result.candidate_pairs.height == 1
-    reason_codes = result.candidate_pairs.row(0, named=True)["candidate_reason_codes"]
-    assert "shared_location" in reason_codes
+    assert result.candidate_pairs.is_empty()
 
 
-def test_generate_candidates_keeps_taxonomy_overlap_for_mixed_shapes() -> None:
-    """Legacy taxonomy variants should normalize into equivalent overlap semantics."""
+def test_generate_candidates_rejects_taxonomy_overlap_for_mixed_shapes() -> None:
+    """Legacy taxonomy variants still need non-taxonomy evidence to pass blocking."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-taxonomy-mixed",
         scope_id="scope-taxonomy-mixed",
@@ -83,9 +101,7 @@ def test_generate_candidates_keeps_taxonomy_overlap_for_mixed_shapes() -> None:
         explicit_backfill=False,
     )
 
-    assert result.candidate_pairs.height == 1
-    reason_codes = result.candidate_pairs.row(0, named=True)["candidate_reason_codes"]
-    assert "shared_taxonomy" in reason_codes
+    assert result.candidate_pairs.is_empty()
 
 
 def test_generate_candidates_respects_configured_overlap_channels() -> None:
@@ -112,8 +128,8 @@ def test_generate_candidates_respects_configured_overlap_channels() -> None:
     assert result.candidate_pairs.is_empty()
 
 
-def test_generate_candidates_keeps_domain_overlap_for_url_variants() -> None:
-    """Website overlap should compare canonical domains across URL variants."""
+def test_generate_candidates_rejects_domain_overlap_for_url_variants_without_taxonomy() -> None:
+    """Website overlap alone should not pass when taxonomy is mandatory."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-domain",
         scope_id="scope-domain",
@@ -135,13 +151,11 @@ def test_generate_candidates_keeps_domain_overlap_for_url_variants() -> None:
         explicit_backfill=False,
     )
 
-    assert result.candidate_pairs.height == 1
-    reason_codes = result.candidate_pairs.row(0, named=True)["candidate_reason_codes"]
-    assert "shared_domain" in reason_codes
+    assert result.candidate_pairs.is_empty()
 
 
-def test_generate_candidates_keeps_domain_overlap_for_email_and_website() -> None:
-    """Email and website values should overlap when they share a domain."""
+def test_generate_candidates_rejects_domain_overlap_for_email_and_website() -> None:
+    """Domain overlap alone should not pass when taxonomy is mandatory."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-domain-mixed",
         scope_id="scope-domain-mixed",
@@ -161,8 +175,159 @@ def test_generate_candidates_keeps_domain_overlap_for_email_and_website() -> Non
         explicit_backfill=False,
     )
 
+    assert result.candidate_pairs.is_empty()
+
+
+def test_generate_candidates_keeps_exact_taxonomy_plus_email_overlap() -> None:
+    """Exact taxonomy plus email overlap should pass the combined gate."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-taxonomy-email",
+        scope_id="scope-taxonomy-email",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[{"code": "BD"}], [{"code": "BD"}]],
+        locations=[[], []],
+        emails=[["hello@north.org"], ["hello@north.org"]],
+    )
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
     assert result.candidate_pairs.height == 1
     reason_codes = result.candidate_pairs.row(0, named=True)["candidate_reason_codes"]
+    assert "shared_taxonomy" in reason_codes
+    assert "shared_email" in reason_codes
+
+
+def test_generate_candidates_keeps_parent_taxonomy_plus_location_overlap() -> None:
+    """Parent-child taxonomy plus location overlap should pass the combined gate."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-taxonomy-location",
+        scope_id="scope-taxonomy-location",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[{"code": "BD"}], [{"code": "B"}]],
+        locations=[
+            [{"city": "Chicago", "state": "IL"}],
+            [{"city": "Chicago", "state": "IL"}],
+        ],
+    )
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.height == 1
+    reason_codes = result.candidate_pairs.row(0, named=True)["candidate_reason_codes"]
+    assert "shared_taxonomy" in reason_codes
+    assert "shared_location" in reason_codes
+
+
+def test_generate_candidates_keeps_taxonomy_plus_phone_overlap() -> None:
+    """Taxonomy plus phone overlap should pass the combined gate."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-taxonomy-phone",
+        scope_id="scope-taxonomy-phone",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[{"code": "BD"}], [{"code": "BD"}]],
+        locations=[[], []],
+        phones=[["555-0100"], ["555-0100"]],
+    )
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.height == 1
+    reason_codes = result.candidate_pairs.row(0, named=True)["candidate_reason_codes"]
+    assert "shared_taxonomy" in reason_codes
+    assert "shared_phone" in reason_codes
+
+
+def test_generate_candidates_rejects_sibling_taxonomy_even_with_email_overlap() -> None:
+    """Sibling taxonomy matches should not pass even when another overlap exists."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-taxonomy-sibling",
+        scope_id="scope-taxonomy-sibling",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[{"code": "BD"}], [{"code": "BF"}]],
+        locations=[[], []],
+        emails=[["hello@north.org"], ["hello@north.org"]],
+    )
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.is_empty()
+
+
+def test_generate_candidates_rejects_grandparent_taxonomy_even_with_email_overlap() -> None:
+    """Grandparent-child taxonomy matches should not pass under the stricter rule."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-taxonomy-grandparent",
+        scope_id="scope-taxonomy-grandparent",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[{"code": "B"}], [{"code": "BD-1800"}]],
+        locations=[[], []],
+        emails=[["hello@north.org"], ["hello@north.org"]],
+    )
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.is_empty()
+
+
+def test_generate_candidates_keeps_taxonomy_plus_domain_overlap_for_email_and_website() -> None:
+    """Taxonomy plus domain overlap should pass even across email-vs-website evidence."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-taxonomy-domain-mixed",
+        scope_id="scope-taxonomy-domain-mixed",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[{"code": "BD"}], [{"code": "BD"}]],
+        locations=[[], []],
+        emails=[["hello@alpha.org"], []],
+        websites=[[], ["https://www.alpha.org/path"]],
+    )
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.height == 1
+    reason_codes = result.candidate_pairs.row(0, named=True)["candidate_reason_codes"]
+    assert "shared_taxonomy" in reason_codes
     assert "shared_domain" in reason_codes
 
 
@@ -208,7 +373,12 @@ def test_generate_candidates_logs_blocking_overview_summary(
             "phones": [[], [], [], []],
             "websites": [[], [], [], []],
             "locations": [[], [], [], []],
-            "taxonomies": [[], [], [], []],
+            "taxonomies": [
+                [{"code": "BD"}],
+                [{"code": "BD"}],
+                [{"code": "BD"}],
+                [{"code": "ZZ"}],
+            ],
             "identifiers": [[], [], [], []],
             "services_rollup": [[], [], [], []],
             "organization_name": ["", "", "", ""],
@@ -245,11 +415,13 @@ def _organization_frame(
     taxonomies: list[object],
     locations: list[object],
     emails: list[object] | None = None,
+    phones: list[object] | None = None,
     websites: list[object] | None = None,
     services_rollup: list[object] | None = None,
 ) -> pl.DataFrame:
     """Build normalized-organization frame with configurable overlap payloads."""
     resolved_emails = emails if emails is not None else [[], []]
+    resolved_phones = phones if phones is not None else [[], []]
     resolved_websites = websites if websites is not None else [[], []]
     resolved_services_rollup = services_rollup if services_rollup is not None else [[], []]
     return pl.DataFrame(
@@ -260,7 +432,7 @@ def _organization_frame(
             "name": ["North Clinic", "North Clinic LLC"],
             "description": ["Primary care", "Primary care services"],
             "emails": resolved_emails,
-            "phones": [[], []],
+            "phones": resolved_phones,
             "websites": resolved_websites,
             "locations": locations,
             "taxonomies": taxonomies,

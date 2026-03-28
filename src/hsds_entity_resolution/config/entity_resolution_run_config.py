@@ -67,6 +67,7 @@ class DeterministicConfig(BaseStrictModel):
     shared_email: DeterministicSignalConfig
     shared_phone: DeterministicSignalConfig
     shared_domain: DeterministicSignalConfig
+    shared_taxonomy: DeterministicSignalConfig
     shared_address: DeterministicSignalConfig
     shared_identifier: DeterministicSignalConfig
 
@@ -90,6 +91,14 @@ class MlConfig(BaseStrictModel):
     ml_threshold_fallback: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
+class CalibrationConfig(BaseStrictModel):
+    """Shadow confidence calibration controls."""
+
+    enabled: bool = True
+    prior_log_odds: float = Field(default=-0.5, ge=-10.0, le=10.0)
+    calibration_version: str = "shadow-log-odds-v1"
+
+
 class ScoringConfig(BaseStrictModel):
     """Top-level scoring constants for one run scope."""
 
@@ -102,6 +111,7 @@ class ScoringConfig(BaseStrictModel):
     deterministic: DeterministicConfig
     nlp: NlpConfig
     ml: MlConfig
+    calibration: CalibrationConfig
 
     @model_validator(mode="after")
     def validate_weighting_rules(self) -> ScoringConfig:
@@ -171,10 +181,11 @@ class EntityResolutionRunConfig(BaseStrictModel):
         model_version: str = "embedding-only-v1",
     ) -> EntityResolutionRunConfig:
         """Build RFC-aligned defaults for organization or service scope."""
+        blocking = BlockingConfig(max_candidates_per_entity=125 if entity_type == "service" else 50)
         deterministic_weights = _build_deterministic_defaults(entity_type=entity_type)
         scoring_values = _build_scoring_defaults(entity_type=entity_type)
         return cls(
-            blocking=BlockingConfig(),
+            blocking=blocking,
             scoring=ScoringConfig(
                 deterministic=deterministic_weights,
                 nlp=NlpConfig(
@@ -182,6 +193,10 @@ class EntityResolutionRunConfig(BaseStrictModel):
                     standalone_fuzzy_threshold=scoring_values["standalone_fuzzy_threshold"],
                 ),
                 ml=MlConfig(ml_gate_threshold=scoring_values["ml_gate_threshold"]),
+                calibration=CalibrationConfig(
+                    prior_log_odds=scoring_values["prior_log_odds"],
+                    calibration_version="shadow-log-odds-v1",
+                ),
                 deterministic_section_weight=scoring_values["deterministic_section_weight"],
                 nlp_section_weight=scoring_values["nlp_section_weight"],
                 ml_section_weight=scoring_values["ml_section_weight"],
@@ -208,7 +223,8 @@ def _build_deterministic_defaults(*, entity_type: EntityType) -> DeterministicCo
         return DeterministicConfig(
             shared_email=DeterministicSignalConfig(weight=0.22),
             shared_phone=DeterministicSignalConfig(weight=0.20),
-            shared_domain=DeterministicSignalConfig(weight=0.08),
+            shared_domain=DeterministicSignalConfig(weight=0.06),
+            shared_taxonomy=DeterministicSignalConfig(weight=0.08),
             shared_address=DeterministicSignalConfig(weight=0.25),
             shared_identifier=DeterministicSignalConfig(weight=0.25),
         )
@@ -216,6 +232,7 @@ def _build_deterministic_defaults(*, entity_type: EntityType) -> DeterministicCo
         shared_email=DeterministicSignalConfig(weight=0.16),
         shared_phone=DeterministicSignalConfig(weight=0.22),
         shared_domain=DeterministicSignalConfig(weight=0.04),
+        shared_taxonomy=DeterministicSignalConfig(weight=0.12),
         shared_address=DeterministicSignalConfig(weight=0.34),
         shared_identifier=DeterministicSignalConfig(enabled=False, weight=0.0),
     )
@@ -233,6 +250,7 @@ def _build_scoring_defaults(*, entity_type: EntityType) -> dict[str, float]:
             "ml_gate_threshold": 0.55,
             "duplicate_threshold": 0.82,
             "maybe_threshold": 0.68,
+            "prior_log_odds": -0.5,
         }
     # Service-specific calibration notes:
     # - HSDS services from different 211 schemas are copies of the same AIRS master
@@ -256,4 +274,5 @@ def _build_scoring_defaults(*, entity_type: EntityType) -> dict[str, float]:
         "ml_gate_threshold": 0.50,
         "duplicate_threshold": 0.70,
         "maybe_threshold": 0.62,
+        "prior_log_odds": -0.25,
     }

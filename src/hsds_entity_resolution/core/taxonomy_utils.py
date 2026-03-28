@@ -174,12 +174,56 @@ def to_legacy_services(value: object) -> list[dict[str, Any]]:
     return services
 
 
+def taxonomy_hierarchy_levels(code: str) -> tuple[str, ...]:
+    """Return ordered HSIS hierarchy levels from root to exact code."""
+    normalized = clean_text_scalar(code)
+    if not normalized:
+        return ()
+    if "-" not in normalized:
+        if normalized.isalpha() and len(normalized) > 1:
+            return tuple(normalized[:index] for index in range(1, len(normalized) + 1))
+        return (normalized,)
+
+    head, *tail_segments = normalized.split("-")
+    levels: list[str] = []
+    if head.isalpha() and len(head) > 1:
+        levels.extend(head[:index] for index in range(1, len(head) + 1))
+        current = head
+    else:
+        levels.append(head)
+        current = head
+
+    for segment in tail_segments:
+        dot_parts = segment.split(".")
+        current = f"{current}-{dot_parts[0]}"
+        levels.append(current)
+        for dot_part in dot_parts[1:]:
+            current = f"{current}.{dot_part}"
+            levels.append(current)
+    return tuple(dict.fromkeys(levels))
+
+
 def taxonomy_parent_codes(code: str) -> set[str]:
-    """Expand dashed taxonomy code prefixes for hierarchical matching."""
-    if "-" not in code:
+    """Return all HSIS parent levels above the exact code."""
+    hierarchy = taxonomy_hierarchy_levels(code)
+    if len(hierarchy) <= 1:
         return set()
-    parts = code.split("-")
-    return {"-".join(parts[:index]) for index in range(1, len(parts))}
+    return set(hierarchy[:-1])
+
+
+def taxonomy_codes_match_or_parent_child(*, left_code: str, right_code: str) -> bool:
+    """Return true for exact HSIS matches or direct parent-child relationships only."""
+    left_hierarchy = taxonomy_hierarchy_levels(left_code)
+    right_hierarchy = taxonomy_hierarchy_levels(right_code)
+    if not left_hierarchy or not right_hierarchy:
+        return False
+    if left_hierarchy[-1] == right_hierarchy[-1]:
+        return True
+    if len(left_hierarchy) == len(right_hierarchy) + 1:
+        return left_hierarchy[:-1] == right_hierarchy
+    if len(right_hierarchy) == len(left_hierarchy) + 1:
+        return right_hierarchy[:-1] == left_hierarchy
+    return False
 
 
 def _first_non_empty(*, item: Mapping[str, Any], keys: tuple[str, ...]) -> str:

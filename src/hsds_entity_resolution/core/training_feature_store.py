@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -20,6 +21,7 @@ from hsds_entity_resolution.types.rows import RawEntityRowInput
 
 RunSelectionPolicy = Literal["latest", "all"]
 _REVIEW_SOURCE = "ER_RUNTIME.DUPLICATE_PAIR_SCORES"
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -72,12 +74,13 @@ def materialize_training_features(
             skipped_pairs=0,
             source_run_id=source_run_id,
         )
+    _log_reviewed_score_diagnostics(rows=rows, entity_type=entity_type)
 
     reason_map = _load_reason_map(
         cursor=cursor,
         source_database=source_database,
         source_schema=source_schema,
-        duplicate_pair_ids=[str(row["SOURCE_PAIR_ID"]) for row in rows],
+        source_score_ids=[str(row["SOURCE_SCORE_ID"]) for row in rows],
     )
     extractor = build_feature_extractor(
         entity_type=entity_type,
@@ -89,7 +92,7 @@ def materialize_training_features(
         rows=rows, run_selection=run_selection
     )
     for row in rows:
-        row["PIPELINE_SIGNALS"] = reason_map.get(str(row["SOURCE_PAIR_ID"]), [])
+        row["PIPELINE_SIGNALS"] = reason_map.get(str(row["SOURCE_SCORE_ID"]), [])
         entity_a_snapshot_id = _ensure_entity_snapshot(
             cursor=cursor,
             database=database,
@@ -233,6 +236,10 @@ def _load_reviewed_pairs_from_runtime(
                 dps.ENTITY_TYPE,
                 dps.PREDICTED_DUPLICATE,
                 dps.CONFIDENCE_SCORE,
+                dps.LEGACY_CONFIDENCE_SCORE,
+                dps.SHADOW_CONFIDENCE_SCORE,
+                dps.SHADOW_LOG_ODDS,
+                dps.CALIBRATION_VERSION,
                 dps.DETERMINISTIC_SECTION_SCORE,
                 dps.NLP_SECTION_SCORE,
                 dps.ML_SECTION_SCORE,
@@ -275,6 +282,10 @@ def _load_reviewed_pairs_from_runtime(
             rs.ENTITY_TYPE,
             rs.PREDICTED_DUPLICATE,
             rs.CONFIDENCE_SCORE,
+            rs.LEGACY_CONFIDENCE_SCORE,
+            rs.SHADOW_CONFIDENCE_SCORE,
+            rs.SHADOW_LOG_ODDS,
+            rs.CALIBRATION_VERSION,
             rs.DETERMINISTIC_SECTION_SCORE,
             rs.NLP_SECTION_SCORE,
             rs.ML_SECTION_SCORE,
@@ -396,16 +407,18 @@ def _load_reason_map(
     cursor: Any,
     source_database: str,
     source_schema: str,
-    duplicate_pair_ids: list[str],
+    source_score_ids: list[str],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Load per-pair reason rows for the reviewed source pairs."""
-    if not duplicate_pair_ids:
+    """Load per-score reason rows for the reviewed source scores."""
+    if not source_score_ids:
         return {}
-    placeholders = ", ".join(["%s"] * len(duplicate_pair_ids))
+    placeholders = ", ".join(["%s"] * len(source_score_ids))
     cursor.execute(
         f"""
         SELECT
+            DUPLICATE_PAIR_SCORE_ID,
             DUPLICATE_PAIR_ID,
+            DEDUPLICATION_RUN_ID,
             MATCH_TYPE,
             ENTITY_TYPE,
             RAW_CONTRIBUTION,
@@ -417,26 +430,28 @@ def _load_reason_map(
             SIMILARITY_SCORE,
             CREATED_AT
         FROM {source_database}.{source_schema}.DUPLICATE_REASONS
-        WHERE DUPLICATE_PAIR_ID IN ({placeholders})
-        ORDER BY DUPLICATE_PAIR_ID, CREATED_AT, MATCH_TYPE
+        WHERE DUPLICATE_PAIR_SCORE_ID IN ({placeholders})
+        ORDER BY DUPLICATE_PAIR_SCORE_ID, CREATED_AT, MATCH_TYPE
         """,
-        tuple(duplicate_pair_ids),
+        tuple(source_score_ids),
     )
     reason_map: dict[str, list[dict[str, Any]]] = {}
     for row in cursor.fetchall():
-        pair_id = str(row[0])
-        reason_map.setdefault(pair_id, []).append(
+        score_id = str(row[0])
+        reason_map.setdefault(score_id, []).append(
             {
-                "MATCH_TYPE": row[1],
-                "ENTITY_TYPE": row[2],
-                "RAW_CONTRIBUTION": row[3],
-                "WEIGHTED_CONTRIBUTION": row[4],
-                "SIGNAL_WEIGHT": row[5],
-                "MATCHED_VALUE": row[6],
-                "ENTITY_A_VALUE": row[7],
-                "ENTITY_B_VALUE": row[8],
-                "SIMILARITY_SCORE": row[9],
-                "CREATED_AT": row[10],
+                "DUPLICATE_PAIR_ID": row[1],
+                "DEDUPLICATION_RUN_ID": row[2],
+                "MATCH_TYPE": row[3],
+                "ENTITY_TYPE": row[4],
+                "RAW_CONTRIBUTION": row[5],
+                "WEIGHTED_CONTRIBUTION": row[6],
+                "SIGNAL_WEIGHT": row[7],
+                "MATCHED_VALUE": row[8],
+                "ENTITY_A_VALUE": row[9],
+                "ENTITY_B_VALUE": row[10],
+                "SIMILARITY_SCORE": row[11],
+                "CREATED_AT": row[12],
             }
         )
     return reason_map
@@ -947,6 +962,55 @@ def _review_decision_from_bool(value: Any) -> str | None:
     if value is False:
         return "FALSE_POSITIVE"
     return None
+
+
+def _log_reviewed_score_diagnostics(
+    *,
+    rows: list[dict[str, Any]],
+    entity_type: EntityType,
+) -> None:
+    """Log lightweight reviewed-label diagnostics for legacy vs shadow scores."""
+    if not rows:
+        return
+    shadow_present = any(row.get("SHADOW_CONFIDENCE_SCORE") is not None for row in rows)
+    if not shadow_present:
+        return
+    positives = [row for row in rows if row.get("TEAM_REVIEW_LABEL") is True]
+    negatives = [row for row in rows if row.get("TEAM_REVIEW_LABEL") is False]
+    if not positives or not negatives:
+        return
+    legacy_top_rate = _top_decile_duplicate_rate(rows=rows, score_field="CONFIDENCE_SCORE")
+    shadow_top_rate = _top_decile_duplicate_rate(rows=rows, score_field="SHADOW_CONFIDENCE_SCORE")
+    _log.info(
+        "training_feature_store reviewed score shadow | entity_type=%s reviewed=%d"
+        " legacy_pos_mean=%.3f legacy_neg_mean=%.3f shadow_pos_mean=%.3f shadow_neg_mean=%.3f"
+        " legacy_top_decile_dup_rate=%.3f shadow_top_decile_dup_rate=%.3f",
+        entity_type,
+        len(rows),
+        _mean_score(positives, "CONFIDENCE_SCORE"),
+        _mean_score(negatives, "CONFIDENCE_SCORE"),
+        _mean_score(positives, "SHADOW_CONFIDENCE_SCORE"),
+        _mean_score(negatives, "SHADOW_CONFIDENCE_SCORE"),
+        legacy_top_rate,
+        shadow_top_rate,
+    )
+
+
+def _mean_score(rows: list[dict[str, Any]], score_field: str) -> float:
+    scores = [_safe_float(row.get(score_field), default=0.0) for row in rows]
+    return sum(scores) / max(len(scores), 1)
+
+
+def _top_decile_duplicate_rate(*, rows: list[dict[str, Any]], score_field: str) -> float:
+    ordered = sorted(
+        rows,
+        key=lambda row: _safe_float(row.get(score_field), default=0.0),
+        reverse=True,
+    )
+    cutoff = max(len(ordered) // 10, 1)
+    top = ordered[:cutoff]
+    positives = sum(1 for row in top if row.get("TEAM_REVIEW_LABEL") is True)
+    return positives / max(len(top), 1)
 
 
 def _extract_policy_version(pipeline_config_snapshot: Any) -> str | None:

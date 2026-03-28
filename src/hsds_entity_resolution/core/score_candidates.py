@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from math import exp
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,7 +16,7 @@ from hsds_entity_resolution.core.dataframe_utils import (
     clean_text_scalar,
     frame_with_schema,
 )
-from hsds_entity_resolution.core.domain_utils import domain_overlap_score
+from hsds_entity_resolution.core.domain_utils import domain_overlap_score, extract_contact_domains
 from hsds_entity_resolution.core.evidence_policy import is_contributing_evidence
 from hsds_entity_resolution.core.ml_inference import score_pairs_with_model, to_legacy_entity
 from hsds_entity_resolution.core.nlp import compute_nlp_score
@@ -23,10 +24,18 @@ from hsds_entity_resolution.core.pair_tiering import (
     classify_pair_outcome,
     is_review_eligible_outcome,
 )
+from hsds_entity_resolution.core.taxonomy_utils import (
+    extract_entity_taxonomy_codes,
+    taxonomy_hierarchy_levels,
+)
 from hsds_entity_resolution.core.training_features import build_signal_overrides_from_reason_sets
 from hsds_entity_resolution.observability import IncrementalProgressLogger
 from hsds_entity_resolution.types.contracts import ScoreCandidatesResult
 from hsds_entity_resolution.types.frames import PAIR_REASONS_SCHEMA, SCORED_PAIRS_SCHEMA
+
+_ADDRESS_REASON_MATCH_TYPE = "shared_address"
+_DOMAIN_REASON_MATCH_TYPE = "shared_domain"
+_TAXONOMY_REASON_MATCH_TYPE = "shared_taxonomy"
 
 
 @dataclass(frozen=True)
@@ -120,6 +129,7 @@ def score_candidates(
     _log_signal_band_diagnostics(
         scored_pairs=scored_pairs, pair_reasons=pair_reasons, config=config
     )
+    _log_shadow_confidence_diagnostics(scored_pairs=scored_pairs, pair_reasons=pair_reasons)
     summary = pl.DataFrame(
         {
             "candidates_scored": [scored_pairs.height],
@@ -277,6 +287,18 @@ def _finalize_pair(
         ml_score=ml_score,
         config=config,
     )
+    legacy_confidence_score = final_score
+    shadow_log_odds = _shadow_log_odds(
+        det_reasons=record.det_reasons,
+        nlp_score=record.nlp_score,
+        ml_score=ml_score,
+        config=config,
+    )
+    shadow_confidence_score = _shadow_confidence(
+        shadow_log_odds=shadow_log_odds,
+        legacy_confidence_score=legacy_confidence_score,
+        config=config,
+    )
     pair_outcome = classify_pair_outcome(
         final_score=final_score,
         duplicate_threshold=config.scoring.duplicate_threshold,
@@ -303,6 +325,10 @@ def _finalize_pair(
         "nlp_section_score": record.nlp_score,
         "ml_section_score": ml_score,
         "final_score": final_score,
+        "legacy_confidence_score": legacy_confidence_score,
+        "shadow_confidence_score": shadow_confidence_score,
+        "shadow_log_odds": shadow_log_odds,
+        "calibration_version": config.scoring.calibration.calibration_version,
         "predicted_duplicate": predicted_duplicate,
         "pair_outcome": pair_outcome,
         "review_eligible": review_eligible,
@@ -329,6 +355,7 @@ def _deterministic_score(
     shared_address_right = _canonical_address_values(right.get("locations"))
     shared_identifier_left = _canonical_identifier_values(left.get("identifiers"))
     shared_identifier_right = _canonical_identifier_values(right.get("identifiers"))
+    taxonomy_overlap = _taxonomy_overlap_details(left=left, right=right)
     channels = {
         "shared_email": (
             left.get("emails"),
@@ -344,6 +371,11 @@ def _deterministic_score(
             [],
             [],
             config.scoring.deterministic.shared_domain,
+        ),
+        "shared_taxonomy": (
+            taxonomy_overlap["left_values"],
+            taxonomy_overlap["right_values"],
+            config.scoring.deterministic.shared_taxonomy,
         ),
         "shared_address": (
             shared_address_left,
@@ -361,10 +393,15 @@ def _deterministic_score(
     weighted_total = 0.0
     enabled_weight_total = 0.0
     for match_type, (left_values, right_values, signal) in channels.items():
+        overlap = _overlap_details(left_values=left_values, right_values=right_values)
+        is_domain_reason = match_type == _DOMAIN_REASON_MATCH_TYPE
+        is_taxonomy_reason = match_type == _TAXONOMY_REASON_MATCH_TYPE
         raw = (
             domain_raw
-            if match_type == "shared_domain"
-            else _overlap_ratio(left_values=left_values, right_values=right_values)
+            if is_domain_reason
+            else taxonomy_overlap["score"]
+            if is_taxonomy_reason
+            else overlap["ratio"]
         )
         weighted = _signal_weighted_contribution(
             raw=raw,
@@ -383,6 +420,37 @@ def _deterministic_score(
                     raw=raw,
                     weighted=weighted,
                     signal_weight=signal.weight,
+                    matched_value=_format_matched_value(
+                        match_type=match_type,
+                        overlap_value=(
+                            _select_domain_overlap_value(left=left, right=right)
+                            if is_domain_reason
+                            else taxonomy_overlap["shared_value"]
+                            if is_taxonomy_reason
+                            else overlap["shared_value"]
+                        ),
+                    ),
+                    entity_a_value=_format_reason_values(
+                        match_type=match_type,
+                        values=(
+                            _domain_evidence_values(left)
+                            if is_domain_reason
+                            else taxonomy_overlap["left_values"]
+                            if is_taxonomy_reason
+                            else overlap["left_values"]
+                        ),
+                    ),
+                    entity_b_value=_format_reason_values(
+                        match_type=match_type,
+                        values=(
+                            _domain_evidence_values(right)
+                            if is_domain_reason
+                            else taxonomy_overlap["right_values"]
+                            if is_taxonomy_reason
+                            else overlap["right_values"]
+                        ),
+                    ),
+                    similarity_score=raw if is_taxonomy_reason else None,
                 )
             )
     return _normalize_section_score(
@@ -399,6 +467,7 @@ def _log_scoring_configuration(*, config: EntityResolutionRunConfig) -> None:
         "shared_email",
         "shared_phone",
         "shared_domain",
+        "shared_taxonomy",
         "shared_address",
     ]
     if entity_type == "organization":
@@ -435,15 +504,22 @@ def _normalize_section_score(*, weighted_sum: float, enabled_weight_sum: float) 
     return min(weighted_sum / enabled_weight_sum, 1.0)
 
 
-def _overlap_ratio(*, left_values: Any, right_values: Any) -> float:
-    """Compute overlap ratio between normalized list-like values."""
-    left_set = set(clean_string_list(left_values))
-    right_set = set(clean_string_list(right_values))
-    if not left_set or not right_set:
-        return 0.0
-    overlap_count = len(left_set.intersection(right_set))
-    denominator = max(len(left_set), len(right_set))
-    return overlap_count / denominator
+def _overlap_details(*, left_values: Any, right_values: Any) -> dict[str, Any]:
+    """Compute overlap ratio and retain normalized evidence values."""
+    normalized_left = clean_string_list(left_values)
+    normalized_right = clean_string_list(right_values)
+    left_set = set(normalized_left)
+    right_set = set(normalized_right)
+    shared = sorted(left_set.intersection(right_set))
+    ratio = 0.0
+    if left_set and right_set:
+        ratio = len(shared) / max(len(left_set), len(right_set))
+    return {
+        "ratio": ratio,
+        "shared_value": shared[0] if shared else None,
+        "left_values": normalized_left,
+        "right_values": normalized_right,
+    }
 
 
 def _canonical_address_values(locations_value: Any) -> list[str]:
@@ -520,6 +596,86 @@ def _first_present(payload: dict[str, Any], keys: tuple[str, ...]) -> object:
     return None
 
 
+def _domain_evidence_values(entity: dict[str, Any]) -> list[str]:
+    """Collect normalized email and website evidence used by domain overlap."""
+    return sorted(
+        extract_contact_domains(
+            emails_value=entity.get("emails"),
+            websites_value=entity.get("websites"),
+        )
+    )
+
+
+def _select_domain_overlap_value(*, left: dict[str, Any], right: dict[str, Any]) -> str | None:
+    """Choose one shared domain-style value for reviewer display."""
+    shared = sorted(set(_domain_evidence_values(left)).intersection(_domain_evidence_values(right)))
+    return shared[0] if shared else None
+
+
+def _taxonomy_overlap_details(*, left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Return strongest HSIS hierarchy match and the evidence values used to score it."""
+    left_codes = sorted(extract_entity_taxonomy_codes(entity=left, include_parent_codes=False))
+    right_codes = sorted(extract_entity_taxonomy_codes(entity=right, include_parent_codes=False))
+    best_score = 0.0
+    best_common_ancestor: str | None = None
+    for left_code in left_codes:
+        for right_code in right_codes:
+            score, common_ancestor = _taxonomy_pair_score(
+                left_code=left_code,
+                right_code=right_code,
+            )
+            if score > best_score:
+                best_score = score
+                best_common_ancestor = common_ancestor
+    return {
+        "score": best_score,
+        "shared_value": best_common_ancestor,
+        "left_values": left_codes,
+        "right_values": right_codes,
+    }
+
+
+def _taxonomy_pair_score(*, left_code: str, right_code: str) -> tuple[float, str | None]:
+    """Score two HSIS taxonomy codes by deepest shared ancestor with exponential decay."""
+    left_hierarchy = taxonomy_hierarchy_levels(left_code)
+    right_hierarchy = taxonomy_hierarchy_levels(right_code)
+    if not left_hierarchy or not right_hierarchy:
+        return 0.0, None
+    right_depths = {code: depth for depth, code in enumerate(right_hierarchy)}
+    common_ancestor: str | None = None
+    common_depth = -1
+    for left_depth, code in enumerate(left_hierarchy):
+        if code not in right_depths:
+            continue
+        candidate_depth = min(left_depth, right_depths[code])
+        if candidate_depth >= common_depth:
+            common_depth = candidate_depth
+            common_ancestor = code
+    if common_ancestor is None:
+        return 0.0, None
+    max_depth = max(len(left_hierarchy) - 1, len(right_hierarchy) - 1)
+    distance = max_depth - common_depth
+    return 0.7**distance, common_ancestor
+
+
+def _format_reason_values(*, match_type: str, values: list[str]) -> str | None:
+    """Serialize normalized per-side evidence into a compact display string."""
+    if not values:
+        return None
+    if match_type == _ADDRESS_REASON_MATCH_TYPE:
+        return "; ".join(value.replace("|", ", ") for value in values)
+    return ", ".join(values)
+
+
+def _format_matched_value(*, match_type: str, overlap_value: str | None) -> str | None:
+    """Format one matched evidence value for reviewer display."""
+    if overlap_value is None:
+        return None
+    if match_type == _ADDRESS_REASON_MATCH_TYPE:
+        return overlap_value.replace("|", ", ")
+    return overlap_value
+
+
 def _nlp_score(
     *,
     left: dict[str, Any],
@@ -539,6 +695,9 @@ def _nlp_score(
         raw=similarity,
         weighted=weighted,
         signal_weight=1.0,
+        entity_a_value=clean_text_scalar(left.get("name")) or None,
+        entity_b_value=clean_text_scalar(right.get("name")) or None,
+        similarity_score=similarity,
     )
     reasons = (
         [reason]
@@ -598,6 +757,41 @@ def _final_score(
     return _compose_weighted_score(components=components)
 
 
+def _shadow_log_odds(
+    *,
+    det_reasons: list[dict[str, Any]],
+    nlp_score: float,
+    ml_score: float | None,
+    config: EntityResolutionRunConfig,
+) -> float:
+    """Compute shadow calibration log-odds from unsaturated additive evidence."""
+    deterministic_evidence = sum(
+        float(reason["weighted_contribution"]) for reason in det_reasons
+    )
+    nlp_evidence = config.scoring.nlp_section_weight * float(nlp_score)
+    ml_evidence = (
+        config.scoring.ml_section_weight * float(ml_score) if ml_score is not None else 0.0
+    )
+    return (
+        config.scoring.calibration.prior_log_odds
+        + deterministic_evidence
+        + nlp_evidence
+        + ml_evidence
+    )
+
+
+def _shadow_confidence(
+    *,
+    shadow_log_odds: float,
+    legacy_confidence_score: float,
+    config: EntityResolutionRunConfig,
+) -> float:
+    """Resolve bounded shadow confidence with a legacy fallback switch."""
+    if not config.scoring.calibration.enabled:
+        return legacy_confidence_score
+    return 1.0 / (1.0 + exp(-shadow_log_odds))
+
+
 def _compose_weighted_score(*, components: list[tuple[float | None, float]]) -> float:
     """Normalize weighted section scores across the sections that are actually active."""
     weighted_sum = 0.0
@@ -613,7 +807,15 @@ def _compose_weighted_score(*, components: list[tuple[float | None, float]]) -> 
 
 
 def _reason_row(
-    *, match_type: str, raw: float, weighted: float, signal_weight: float
+    *,
+    match_type: str,
+    raw: float,
+    weighted: float,
+    signal_weight: float,
+    matched_value: str | None = None,
+    entity_a_value: str | None = None,
+    entity_b_value: str | None = None,
+    similarity_score: float | None = None,
 ) -> dict[str, Any]:
     """Create standardized reason row payload."""
     return {
@@ -621,6 +823,10 @@ def _reason_row(
         "raw_contribution": raw,
         "weighted_contribution": weighted,
         "signal_weight": signal_weight,
+        "matched_value": matched_value,
+        "entity_a_value": entity_a_value,
+        "entity_b_value": entity_b_value,
+        "similarity_score": similarity_score,
     }
 
 
@@ -638,6 +844,7 @@ def _ml_reason(
         raw=ml_score,
         weighted=weighted,
         signal_weight=config.scoring.ml_section_weight,
+        similarity_score=ml_score,
     )
 
 
@@ -689,6 +896,62 @@ def _log_signal_band_diagnostics(
     )
     _log_signal_count_table(records=records, config=config)
     _log_individual_signal_table(records=records)
+
+
+def _log_shadow_confidence_diagnostics(
+    *,
+    scored_pairs: pl.DataFrame,
+    pair_reasons: pl.DataFrame,
+) -> None:
+    """Log side-by-side shadow confidence saturation diagnostics."""
+    if scored_pairs.is_empty():
+        return
+    logger = get_dagster_logger()
+    legacy_mean = _safe_series_mean(scored_pairs, "legacy_confidence_score")
+    shadow_mean = _safe_series_mean(scored_pairs, "shadow_confidence_score")
+    legacy_perfect = scored_pairs.filter(pl.col("legacy_confidence_score") >= 0.999).height
+    shadow_near_perfect = scored_pairs.filter(pl.col("shadow_confidence_score") >= 0.95).height
+    logger.info(
+        "score_candidates confidence_shadow | legacy_mean=%.3f shadow_mean=%.3f"
+        " legacy_perfect=%d shadow_ge_0_95=%d",
+        legacy_mean,
+        shadow_mean,
+        legacy_perfect,
+        shadow_near_perfect,
+    )
+    if pair_reasons.is_empty():
+        return
+    high_shadow_keys = set(
+        scored_pairs.filter(pl.col("shadow_confidence_score") >= 0.95)
+        .get_column("pair_key")
+        .to_list()
+    )
+    if not high_shadow_keys:
+        return
+    patterns = (
+        pair_reasons.filter(pl.col("pair_key").is_in(sorted(high_shadow_keys)))
+        .group_by("pair_key")
+        .agg(pl.col("match_type").sort().alias("reason_types"))
+        .with_columns(pl.col("reason_types").list.join("|").alias("pattern"))
+        .group_by("pattern")
+        .len()
+        .sort("len", descending=True)
+        .head(5)
+        .to_dicts()
+    )
+    if patterns:
+        logger.info(
+            "score_candidates confidence_shadow patterns | %s",
+            ", ".join(f"{row['pattern']}={row['len']}" for row in patterns),
+        )
+
+
+def _safe_series_mean(frame: pl.DataFrame, column: str) -> float:
+    """Return a typed float mean for one numeric column."""
+    mean_value = frame.get_column(column).mean()
+    if isinstance(mean_value, (int, float)):
+        return float(mean_value)
+    return 0.0
 
 
 def _build_signal_analysis(

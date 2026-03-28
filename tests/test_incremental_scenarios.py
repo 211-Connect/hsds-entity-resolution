@@ -169,6 +169,10 @@ def _pair_reasons_row(
         "raw_contribution": raw,
         "weighted_contribution": weighted,
         "signal_weight": 0.2,
+        "matched_value": None,
+        "entity_a_value": None,
+        "entity_b_value": None,
+        "similarity_score": None,
     }
 
 
@@ -220,10 +224,11 @@ _PAIR_KEY = "org-a::org-b"
 _SHARED_EMAIL = "hello@north.org"
 _SHARED_PHONE = "555-0100"
 _SHARED_WEBSITE = "north.org"
+_SHARED_TAXONOMY = {"code": "BD"}
 
 
 def _standard_entity_a(*, embedding: list[float] | None = None) -> dict[str, Any]:
-    return _entity_row(
+    row = _entity_row(
         "org-a",
         "North Clinic",
         emails=[_SHARED_EMAIL],
@@ -231,11 +236,13 @@ def _standard_entity_a(*, embedding: list[float] | None = None) -> dict[str, Any
         websites=[_SHARED_WEBSITE],
         embedding=embedding or _EMB_HIGH_A,
     )
+    row["taxonomies"] = [_SHARED_TAXONOMY]
+    return row
 
 
 def _standard_entity_b(*, embedding: list[float] | None = None) -> dict[str, Any]:
     # Identical name to entity A: ensures NLP = 1.0 and pair lands in duplicate band.
-    return _entity_row(
+    row = _entity_row(
         "org-b",
         "North Clinic",
         emails=[_SHARED_EMAIL],
@@ -243,6 +250,8 @@ def _standard_entity_b(*, embedding: list[float] | None = None) -> dict[str, Any
         websites=[_SHARED_WEBSITE],
         embedding=embedding or _EMB_HIGH_B,
     )
+    row["taxonomies"] = [_SHARED_TAXONOMY]
+    return row
 
 
 def _run_first(scope_id: str) -> Any:
@@ -342,6 +351,7 @@ def test_s1b_full_pipeline_entity_change_drops_score_emits_score_dropped() -> No
         websites=["corp.org"],
         embedding=_EMB_HIGH_A,
     )
+    entity_a_changed["taxonomies"] = [_SHARED_TAXONOMY]
     org_changed = _org_frame(entity_a_changed, _standard_entity_b())
     run2 = run_incremental(
         organization_entities=org_changed,
@@ -480,6 +490,7 @@ def test_s1f_hash_irrelevant_field_change_preserves_pair_state() -> None:
         websites=[_SHARED_WEBSITE],
         embedding=_EMB_ORTHO,  # orthogonal to entity B; still high cosine if checked
     )
+    entity_a_embedding_changed["taxonomies"] = [_SHARED_TAXONOMY]
     org_embedding_changed = _org_frame(entity_a_embedding_changed, _standard_entity_b())
     run2 = run_incremental(
         organization_entities=org_embedding_changed,

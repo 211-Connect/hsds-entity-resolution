@@ -15,6 +15,8 @@ from hsds_entity_resolution.core.taxonomy_utils import (
     clean_taxonomy_objects,
     extract_entity_taxonomy_codes,
     extract_taxonomy_codes,
+    taxonomy_codes_match_or_parent_child,
+    taxonomy_hierarchy_levels,
     taxonomy_parent_codes,
 )
 
@@ -425,24 +427,37 @@ class TestCleanTaxonomyObjects:
 class TestTaxonomyParentCodes:
     """Tests for hierarchical parent code expansion."""
 
+    def test_hsis_letter_code_expands_to_first_letter_parent(self) -> None:
+        """'bd' must expand to {'b'} for HSIS Level I/II matching."""
+        assert taxonomy_parent_codes("bd") == {"b"}
+
     def test_three_level_code_expands_to_two_parents(self) -> None:
         """'a-b-c' must expand to {'a', 'a-b'} — upward only."""
         result = taxonomy_parent_codes("a-b-c")
         assert result == {"a", "a-b"}
 
     def test_realistic_hsds_code_expands_correctly(self) -> None:
-        """'bd-1800.2000-620' must expand to 'bd' and 'bd-1800.2000'."""
+        """HSIS codes must expand across alpha, hyphen, and dot boundaries."""
         result = taxonomy_parent_codes("bd-1800.2000-620")
+        assert "b" in result
         assert "bd" in result
+        assert "bd-1800" in result
         assert "bd-1800.2000" in result
         assert "bd-1800.2000-620" not in result
 
-    def test_two_level_code_expands_to_one_parent(self) -> None:
-        assert taxonomy_parent_codes("bd-1800") == {"bd"}
+    def test_two_level_code_expands_to_alpha_hierarchy(self) -> None:
+        assert taxonomy_parent_codes("bd-1800") == {"b", "bd"}
 
-    def test_single_level_code_returns_empty_set(self) -> None:
-        """A code with no dashes has no parent codes."""
-        assert taxonomy_parent_codes("bd") == set()
+    def test_hsis_level_six_code_has_expected_levels(self) -> None:
+        """The ordered helper should surface all six HSIS hierarchy levels."""
+        assert taxonomy_hierarchy_levels("LR-8000.0500-800.05") == (
+            "l",
+            "lr",
+            "lr-8000",
+            "lr-8000.0500",
+            "lr-8000.0500-800",
+            "lr-8000.0500-800.05",
+        )
 
     def test_expansion_is_upward_only(self) -> None:
         """Parent expansion must go upward (more general), never downward."""
@@ -452,6 +467,28 @@ class TestTaxonomyParentCodes:
 
     def test_empty_string_returns_empty_set(self) -> None:
         assert taxonomy_parent_codes("") == set()
+
+
+class TestTaxonomyDirectRelationships:
+    """Tests for strict taxonomy blocking relationships."""
+
+    def test_exact_match_is_allowed(self) -> None:
+        assert taxonomy_codes_match_or_parent_child(left_code="BD", right_code="BD")
+
+    def test_direct_parent_child_is_allowed(self) -> None:
+        assert taxonomy_codes_match_or_parent_child(left_code="BD", right_code="BD-1800")
+
+    def test_direct_child_parent_is_allowed(self) -> None:
+        assert taxonomy_codes_match_or_parent_child(left_code="BD-1800", right_code="BD")
+
+    def test_siblings_are_not_allowed(self) -> None:
+        assert not taxonomy_codes_match_or_parent_child(
+            left_code="BD-1800",
+            right_code="BD-1900",
+        )
+
+    def test_grandparent_grandchild_is_not_allowed(self) -> None:
+        assert not taxonomy_codes_match_or_parent_child(left_code="B", right_code="BD-1800")
 
 
 # ===========================================================================
@@ -487,11 +524,13 @@ class TestExtractEntityTaxonomyCodes:
     def test_include_parent_codes_expands_all_codes(self) -> None:
         """With include_parent_codes=True, parent codes of ALL collected codes are added."""
         entity = {
-            "taxonomies": [{"code": "BD-1800"}],
+            "taxonomies": [{"code": "BD"}],
             "services_rollup": [{"name": "S", "taxonomies": [{"code": "YF-3000"}]}],
         }
         result = extract_entity_taxonomy_codes(entity=entity, include_parent_codes=True)
+        assert "b" in result
         assert "bd" in result
+        assert "y" in result
         assert "yf" in result
 
     def test_without_parent_codes_parents_not_included(self) -> None:

@@ -17,7 +17,10 @@ from hsds_entity_resolution.core.dataframe_utils import (
     frame_with_schema,
 )
 from hsds_entity_resolution.core.domain_utils import extract_contact_domains
-from hsds_entity_resolution.core.taxonomy_utils import extract_entity_taxonomy_codes
+from hsds_entity_resolution.core.taxonomy_utils import (
+    extract_entity_taxonomy_codes,
+    taxonomy_codes_match_or_parent_child,
+)
 from hsds_entity_resolution.observability import IncrementalProgressLogger
 from hsds_entity_resolution.types.contracts import GenerateCandidatesResult
 from hsds_entity_resolution.types.frames import CANDIDATE_PAIR_SCHEMA
@@ -46,6 +49,12 @@ class BlockingOverview:
     above_threshold_examined: int
     overlap_blocked: int
     pairs_kept: int
+    truncated_above_threshold: int
+    last_retained_similarity_sum: float
+    last_retained_similarity_count: int
+    taxonomy_failed: int
+    non_taxonomy_failed: int
+    both_failed: int
 
 
 @dataclass
@@ -55,6 +64,9 @@ class BlockingDiagnosticsState:
     channel_hits: dict[str, int]
     above_threshold: int = 0
     overlap_blocked: int = 0
+    taxonomy_failed: int = 0
+    non_taxonomy_failed: int = 0
+    both_failed: int = 0
     first_anchor_id: str | None = None
     first_anchor_schema: str | None = None
     first_anchor_samples: list[dict[str, Any]] = field(default_factory=list)
@@ -67,6 +79,28 @@ class AnchorProcessingResult:
 
     saw_above_threshold: bool
     selected: int
+    last_retained_similarity: float | None
+    truncated_above_threshold: int
+
+
+@dataclass(frozen=True)
+class AggregateBlockingOverviewMetrics:
+    """Aggregated metrics used by the overview logger."""
+
+    active_anchors: int
+    anchors_with_retained: int
+    no_above_threshold: int
+    above_threshold_but_no_retained: int
+    anchors_at_cap: int
+    above_threshold_examined: int
+    overlap_blocked: int
+    truncated_above_threshold: int
+    avg_last_retained_similarity: float
+    last_retained_similarity_count: int
+    avg_truncated_per_capped: float
+    taxonomy_failed: int
+    non_taxonomy_failed: int
+    both_failed: int
 
 
 def generate_candidates(
@@ -183,6 +217,9 @@ def _collect_candidate_records(
     anchors_with_retained_candidates = 0
     anchors_at_candidate_cap = 0
     active_anchors = 0
+    truncated_above_threshold = 0
+    last_retained_similarity_sum = 0.0
+    last_retained_similarity_count = 0
 
     if progress_logger is not None:
         progress_logger.stage_started(stage=stage_name, total=len(sorted_changed_ids))
@@ -222,8 +259,12 @@ def _collect_candidate_records(
             anchors_with_above_threshold += 1
         if anchor_result.selected > 0:
             anchors_with_retained_candidates += 1
+            if anchor_result.last_retained_similarity is not None:
+                last_retained_similarity_sum += anchor_result.last_retained_similarity
+                last_retained_similarity_count += 1
         if anchor_result.selected >= max_per_entity:
             anchors_at_candidate_cap += 1
+        truncated_above_threshold += anchor_result.truncated_above_threshold
         if progress_logger is not None:
             progress_logger.stage_advanced(
                 stage=stage_name,
@@ -257,6 +298,12 @@ def _collect_candidate_records(
         above_threshold_examined=diagnostics.above_threshold,
         overlap_blocked=diagnostics.overlap_blocked,
         pairs_kept=len(pairs_by_key),
+        truncated_above_threshold=truncated_above_threshold,
+        last_retained_similarity_sum=last_retained_similarity_sum,
+        last_retained_similarity_count=last_retained_similarity_count,
+        taxonomy_failed=diagnostics.taxonomy_failed,
+        non_taxonomy_failed=diagnostics.non_taxonomy_failed,
+        both_failed=diagnostics.both_failed,
     )
 
 
@@ -272,6 +319,12 @@ def _empty_blocking_overview(*, entity_type: str) -> BlockingOverview:
         above_threshold_examined=0,
         overlap_blocked=0,
         pairs_kept=0,
+        truncated_above_threshold=0,
+        last_retained_similarity_sum=0.0,
+        last_retained_similarity_count=0,
+        taxonomy_failed=0,
+        non_taxonomy_failed=0,
+        both_failed=0,
     )
 
 
@@ -307,7 +360,9 @@ def _collect_anchor_candidates(
     """Expand one anchor and update shared diagnostics/candidate state."""
     selected = 0
     saw_above_threshold = False
-    for candidate_idx in top_indices:
+    last_retained_similarity: float | None = None
+    truncated_above_threshold = 0
+    for position, candidate_idx in enumerate(top_indices):
         if selected >= max_per_entity:
             break
         if candidate_idx == anchor_idx:
@@ -318,11 +373,12 @@ def _collect_anchor_candidates(
         saw_above_threshold = True
         diagnostics.above_threshold += 1
         candidate = entity_rows[candidate_idx]
-        overlap_reasons = _collect_overlap_reason_codes(
+        taxonomy_reasons, non_taxonomy_reasons = _collect_blocking_reasons(
             anchor=anchor,
             candidate=candidate,
             overlap_channels=overlap_channels,
         )
+        overlap_reasons = [*taxonomy_reasons, *non_taxonomy_reasons]
         _record_overlap_channel_hits(
             diagnostics=diagnostics,
             overlap_channels=overlap_channels,
@@ -336,8 +392,16 @@ def _collect_anchor_candidates(
             overlap_reasons=overlap_reasons,
             capture_this_anchor=capture_this_anchor,
         )
-        if not overlap_reasons:
+        taxonomy_pass = bool(taxonomy_reasons)
+        non_taxonomy_pass = bool(non_taxonomy_reasons)
+        if not taxonomy_pass or not non_taxonomy_pass:
             diagnostics.overlap_blocked += 1
+            if not taxonomy_pass and not non_taxonomy_pass:
+                diagnostics.both_failed += 1
+            elif not taxonomy_pass:
+                diagnostics.taxonomy_failed += 1
+            else:
+                diagnostics.non_taxonomy_failed += 1
             continue
         record = _to_candidate_record(
             anchor=anchor,
@@ -347,7 +411,42 @@ def _collect_anchor_candidates(
         )
         pairs_by_key[record["pair_key"]] = record
         selected += 1
-    return AnchorProcessingResult(saw_above_threshold=saw_above_threshold, selected=selected)
+        last_retained_similarity = similarity
+        if selected >= max_per_entity:
+            truncated_above_threshold = _count_truncated_above_threshold(
+                similarities=similarities,
+                top_indices=top_indices,
+                anchor_idx=anchor_idx,
+                start_position=position + 1,
+                threshold=threshold,
+            )
+            break
+    return AnchorProcessingResult(
+        saw_above_threshold=saw_above_threshold,
+        selected=selected,
+        last_retained_similarity=last_retained_similarity,
+        truncated_above_threshold=truncated_above_threshold,
+    )
+
+
+def _count_truncated_above_threshold(
+    *,
+    similarities: np.ndarray,
+    top_indices: list[int],
+    anchor_idx: int,
+    start_position: int,
+    threshold: float,
+) -> int:
+    """Count above-threshold candidates skipped after hitting the per-anchor cap."""
+    truncated = 0
+    for candidate_idx in top_indices[start_position:]:
+        if candidate_idx == anchor_idx:
+            continue
+        similarity = float(similarities[candidate_idx])
+        if similarity < threshold:
+            break
+        truncated += 1
+    return truncated
 
 
 def _record_overlap_channel_hits(
@@ -505,6 +604,57 @@ def _log_generate_candidates_overview(
     _log = get_dagster_logger()
     threshold = config.blocking.similarity_threshold
     max_per_entity = config.blocking.max_candidates_per_entity
+    totals = _aggregate_blocking_overview_metrics(overviews=overviews)
+    overview_chunks = ", ".join(_format_blocking_overview_chunk(overview) for overview in overviews)
+    heuristic_signals = _blocking_heuristic_signals(
+        active_anchors=totals.active_anchors,
+        no_above_threshold=totals.no_above_threshold,
+        anchors_at_cap=totals.anchors_at_cap,
+        above_threshold_but_no_retained=totals.above_threshold_but_no_retained,
+    )
+    _log.info(
+        "ℹ️ generate_candidates_overview threshold=%.3f max_candidates_per_entity=%d"
+        " candidate_pairs=%d active_anchors=%d anchors_with_retained=%d (%.1f%%)"
+        " anchors_with_no_above_threshold=%d (%.1f%%)"
+        " anchors_above_threshold_but_no_retained=%d (%.1f%%)"
+        " anchors_at_cap=%d (%.1f%%)"
+        " avg_last_retained_similarity=%.4f (n=%d)"
+        " above_threshold_truncated=%d (avg_per_capped=%.1f)"
+        " overlap_blocked=%d/%d (%.1f%% of examined above-threshold)"
+        " blocking_failures=[taxonomy_only=%d non_taxonomy_only=%d both=%d]"
+        " heuristic=%s per_type=[%s]",
+        threshold,
+        max_per_entity,
+        candidate_pair_count,
+        totals.active_anchors,
+        totals.anchors_with_retained,
+        _percent(totals.anchors_with_retained, totals.active_anchors),
+        totals.no_above_threshold,
+        _percent(totals.no_above_threshold, totals.active_anchors),
+        totals.above_threshold_but_no_retained,
+        _percent(totals.above_threshold_but_no_retained, totals.active_anchors),
+        totals.anchors_at_cap,
+        _percent(totals.anchors_at_cap, totals.active_anchors),
+        totals.avg_last_retained_similarity,
+        totals.last_retained_similarity_count,
+        totals.truncated_above_threshold,
+        totals.avg_truncated_per_capped,
+        totals.overlap_blocked,
+        totals.above_threshold_examined,
+        _percent(totals.overlap_blocked, totals.above_threshold_examined),
+        totals.taxonomy_failed,
+        totals.non_taxonomy_failed,
+        totals.both_failed,
+        heuristic_signals,
+        overview_chunks,
+    )
+
+
+def _aggregate_blocking_overview_metrics(
+    *,
+    overviews: list[BlockingOverview],
+) -> AggregateBlockingOverviewMetrics:
+    """Aggregate cross-entity-type blocking metrics for the overview log."""
     active_anchors = sum(overview.active_anchors for overview in overviews)
     anchors_with_above_threshold = sum(
         overview.anchors_with_above_threshold for overview in overviews
@@ -513,40 +663,37 @@ def _log_generate_candidates_overview(
     anchors_at_cap = sum(overview.anchors_at_candidate_cap for overview in overviews)
     above_threshold_examined = sum(overview.above_threshold_examined for overview in overviews)
     overlap_blocked = sum(overview.overlap_blocked for overview in overviews)
-    no_above_threshold = max(0, active_anchors - anchors_with_above_threshold)
-    above_threshold_but_no_retained = max(0, anchors_with_above_threshold - anchors_with_retained)
-    overview_chunks = ", ".join(_format_blocking_overview_chunk(overview) for overview in overviews)
-    heuristic_signals = _blocking_heuristic_signals(
-        active_anchors=active_anchors,
-        no_above_threshold=no_above_threshold,
-        anchors_at_cap=anchors_at_cap,
-        above_threshold_but_no_retained=above_threshold_but_no_retained,
+    truncated_above_threshold = sum(overview.truncated_above_threshold for overview in overviews)
+    last_retained_similarity_sum = sum(
+        overview.last_retained_similarity_sum for overview in overviews
     )
-    _log.info(
-        "ℹ️ generate_candidates_overview threshold=%.3f max_candidates_per_entity=%d"
-        " candidate_pairs=%d active_anchors=%d anchors_with_retained=%d (%.1f%%)"
-        " anchors_with_no_above_threshold=%d (%.1f%%)"
-        " anchors_above_threshold_but_no_retained=%d (%.1f%%)"
-        " anchors_at_cap=%d (%.1f%%)"
-        " overlap_blocked=%d/%d (%.1f%% of examined above-threshold)"
-        " heuristic=%s per_type=[%s]",
-        threshold,
-        max_per_entity,
-        candidate_pair_count,
-        active_anchors,
-        anchors_with_retained,
-        _percent(anchors_with_retained, active_anchors),
-        no_above_threshold,
-        _percent(no_above_threshold, active_anchors),
-        above_threshold_but_no_retained,
-        _percent(above_threshold_but_no_retained, active_anchors),
-        anchors_at_cap,
-        _percent(anchors_at_cap, active_anchors),
-        overlap_blocked,
-        above_threshold_examined,
-        _percent(overlap_blocked, above_threshold_examined),
-        heuristic_signals,
-        overview_chunks,
+    last_retained_similarity_count = sum(
+        overview.last_retained_similarity_count for overview in overviews
+    )
+    return AggregateBlockingOverviewMetrics(
+        active_anchors=active_anchors,
+        anchors_with_retained=anchors_with_retained,
+        no_above_threshold=max(0, active_anchors - anchors_with_above_threshold),
+        above_threshold_but_no_retained=max(
+            0,
+            anchors_with_above_threshold - anchors_with_retained,
+        ),
+        anchors_at_cap=anchors_at_cap,
+        above_threshold_examined=above_threshold_examined,
+        overlap_blocked=overlap_blocked,
+        truncated_above_threshold=truncated_above_threshold,
+        avg_last_retained_similarity=(
+            last_retained_similarity_sum / last_retained_similarity_count
+            if last_retained_similarity_count
+            else 0.0
+        ),
+        last_retained_similarity_count=last_retained_similarity_count,
+        avg_truncated_per_capped=(
+            truncated_above_threshold / anchors_at_cap if anchors_at_cap else 0.0
+        ),
+        taxonomy_failed=sum(overview.taxonomy_failed for overview in overviews),
+        non_taxonomy_failed=sum(overview.non_taxonomy_failed for overview in overviews),
+        both_failed=sum(overview.both_failed for overview in overviews),
     )
 
 
@@ -595,22 +742,27 @@ def _percent(numerator: int, denominator: int) -> float:
     return round((numerator / denominator) * 100.0, 1)
 
 
-def _collect_overlap_reason_codes(
+def _collect_blocking_reasons(
     *,
     anchor: dict[str, Any],
     candidate: dict[str, Any],
     overlap_channels: list[str],
-) -> list[str]:
-    """Return configured overlap reason codes shared by both entities."""
-    reason_codes: list[str] = []
+) -> tuple[list[str], list[str]]:
+    """Return taxonomy and non-taxonomy reasons used by the blocking gate."""
+    taxonomy_reasons: list[str] = []
+    non_taxonomy_reasons: list[str] = []
     evaluators = _overlap_channel_evaluators()
     for channel in overlap_channels:
         evaluator = evaluators.get(channel)
         if evaluator is None:
             continue
         if evaluator(anchor, candidate):
-            reason_codes.append(_OVERLAP_CHANNEL_REASON_CODES[channel])
-    return sorted(set(reason_codes))
+            reason_code = _OVERLAP_CHANNEL_REASON_CODES[channel]
+            if channel == "taxonomy":
+                taxonomy_reasons.append(reason_code)
+            else:
+                non_taxonomy_reasons.append(reason_code)
+    return sorted(set(taxonomy_reasons)), sorted(set(non_taxonomy_reasons))
 
 
 def _to_candidate_record(
@@ -684,10 +836,14 @@ def _has_domain_overlap(anchor: dict[str, Any], candidate: dict[str, Any]) -> bo
 
 
 def _has_taxonomy_overlap(anchor: dict[str, Any], candidate: dict[str, Any]) -> bool:
-    """Return true when taxonomy codes overlap, including parent hierarchy codes."""
-    anchor_codes = extract_entity_taxonomy_codes(entity=anchor, include_parent_codes=True)
-    candidate_codes = extract_entity_taxonomy_codes(entity=candidate, include_parent_codes=True)
-    return bool(anchor_codes.intersection(candidate_codes))
+    """Return true for exact or direct parent-child HSIS taxonomy relationships."""
+    anchor_codes = extract_entity_taxonomy_codes(entity=anchor, include_parent_codes=False)
+    candidate_codes = extract_entity_taxonomy_codes(entity=candidate, include_parent_codes=False)
+    return any(
+        taxonomy_codes_match_or_parent_child(left_code=anchor_code, right_code=candidate_code)
+        for anchor_code in anchor_codes
+        for candidate_code in candidate_codes
+    )
 
 
 def _has_location_overlap(anchor: dict[str, Any], candidate: dict[str, Any]) -> bool:

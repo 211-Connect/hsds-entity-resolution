@@ -7,6 +7,7 @@ from consumer.consumer_adapter.artifact_contracts import assert_valid_artifacts
 from consumer.consumer_adapter.mapper import (
     ConsumerRunContext,
     _map_deduplication_run,
+    _map_duplicate_reasons,
     map_artifacts_to_tables,
 )
 from consumer.consumer_adapter.row_model_validation import validate_table_rows
@@ -241,3 +242,137 @@ def test_deduplication_run_mapping_uses_duplicate_count_for_threshold_metrics() 
     assert row["TARGET_SCHEMAS"] == ["NE211", "DUPAGEC211"]
     assert row["PAIRS_ABOVE_THRESHOLD"] == 2
     assert row["PAIRS_PREDICTED_DUPLICATE"] == 2
+
+
+def test_duplicate_reason_ids_are_scoped_to_the_score_row() -> None:
+    """Same pair reason across different runs should map to different score-scoped IDs."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-1",
+        scope_id="scope-1",
+        entity_type="service",
+    )
+    pair_reasons = pl.DataFrame(
+        {
+            "pair_key": ["pair-1"],
+            "match_type": ["shared_email"],
+            "raw_contribution": [1.0],
+            "weighted_contribution": [0.16],
+            "signal_weight": [0.16],
+            "matched_value": ["alpha@example.org"],
+            "entity_a_value": ["alpha@example.org"],
+            "entity_b_value": ["alpha@example.org"],
+            "similarity_score": [None],
+        }
+    )
+    scored_pairs = pl.DataFrame(
+        {
+            "pair_key": ["pair-1"],
+            "entity_type": ["service"],
+        }
+    )
+    first = _map_duplicate_reasons(
+        pair_reasons=pair_reasons,
+        scored_pairs=scored_pairs,
+        context=ConsumerRunContext(
+            run_id="run-1",
+            team_id="team-1",
+            scope_id="scope-1",
+            target_schemas=["TENANT_A"],
+            entity_type="service",
+            config=config,
+        ),
+        created_at="2026-03-27T00:00:00+00:00",
+    )
+    second = _map_duplicate_reasons(
+        pair_reasons=pair_reasons,
+        scored_pairs=scored_pairs,
+        context=ConsumerRunContext(
+            run_id="run-2",
+            team_id="team-1",
+            scope_id="scope-1",
+            target_schemas=["TENANT_A"],
+            entity_type="service",
+            config=config,
+        ),
+        created_at="2026-03-27T01:00:00+00:00",
+    )
+
+    first_row = first.row(0, named=True)
+    second_row = second.row(0, named=True)
+    assert first_row["ID"] != second_row["ID"]
+    assert first_row["DUPLICATE_PAIR_SCORE_ID"] != second_row["DUPLICATE_PAIR_SCORE_ID"]
+    assert first_row["DEDUPLICATION_RUN_ID"] == "run-1"
+    assert second_row["DEDUPLICATION_RUN_ID"] == "run-2"
+
+
+def test_duplicate_reason_ids_ignore_mutable_scores_within_one_score_row() -> None:
+    """Score-local value changes should keep the same score-scoped reason ID."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-1",
+        scope_id="scope-1",
+        entity_type="service",
+    )
+    scored_pairs = pl.DataFrame(
+        {
+            "pair_key": ["pair-1"],
+            "entity_type": ["service"],
+        }
+    )
+    first = _map_duplicate_reasons(
+        pair_reasons=pl.DataFrame(
+            {
+                "pair_key": ["pair-1"],
+                "match_type": ["name_similarity"],
+                "raw_contribution": [1.0],
+                "weighted_contribution": [1.0],
+                "signal_weight": [1.0],
+                "matched_value": ["teen pregnancy prevention"],
+                "entity_a_value": ["teen pregnancy prevention"],
+                "entity_b_value": ["teen pregnancy prevention"],
+                "similarity_score": [1.0],
+            }
+        ),
+        scored_pairs=scored_pairs,
+        context=ConsumerRunContext(
+            run_id="run-1",
+            team_id="team-1",
+            scope_id="scope-1",
+            target_schemas=["TENANT_A"],
+            entity_type="service",
+            config=config,
+        ),
+        created_at="2026-03-27T00:00:00+00:00",
+    )
+    second = _map_duplicate_reasons(
+        pair_reasons=pl.DataFrame(
+            {
+                "pair_key": ["pair-1"],
+                "match_type": ["name_similarity"],
+                "raw_contribution": [0.92],
+                "weighted_contribution": [0.92],
+                "signal_weight": [0.85],
+                "matched_value": ["teen pregnancy prevention"],
+                "entity_a_value": ["teen pregnancy prevention"],
+                "entity_b_value": ["teen pregnancy prevention"],
+                "similarity_score": [0.92],
+            }
+        ),
+        scored_pairs=scored_pairs,
+        context=ConsumerRunContext(
+            run_id="run-1",
+            team_id="team-1",
+            scope_id="scope-1",
+            target_schemas=["TENANT_A"],
+            entity_type="service",
+            config=config,
+        ),
+        created_at="2026-03-27T01:00:00+00:00",
+    )
+
+    first_row = first.row(0, named=True)
+    second_row = second.row(0, named=True)
+    assert first_row["ID"] == second_row["ID"]
+    assert second_row["RAW_CONTRIBUTION"] == 0.92
+    assert second_row["WEIGHTED_CONTRIBUTION"] == 0.92
+    assert second_row["SIGNAL_WEIGHT"] == 0.85
+    assert second_row["SIMILARITY_SCORE"] == 0.92
