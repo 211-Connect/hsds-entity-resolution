@@ -35,7 +35,7 @@ def _make_record(
 ) -> PreMlPairRecord:
     return PreMlPairRecord(
         candidate={
-            "pair_key": "a::b",
+            "pair_key": "a__b",
             "entity_type": "service",
             "entity_a_id": "a",
             "entity_b_id": "b",
@@ -148,7 +148,7 @@ def test_extract_pair_features_merges_signal_overrides() -> None:
         {"name_token_sort": 0.88, "embedding_similarity": 0.0, "bigram_overlap": 0.5}
     )
     pair: dict[str, Any] = {
-        "pair_key": "a::b",
+        "pair_key": "a__b",
         "embedding_similarity": 0.91,
         "entity_a": {},
         "entity_b": {},
@@ -173,7 +173,7 @@ def test_extract_pair_features_no_signal_overrides_defaults_to_zero() -> None:
     """When signal_overrides is absent the three features default to 0.0."""
     extractor = _make_mock_extractor({"name_token_sort": 0.7})
     pair: dict[str, Any] = {
-        "pair_key": "a::b",
+        "pair_key": "a__b",
         "embedding_similarity": 0.82,
         "entity_a": {},
         "entity_b": {},
@@ -192,7 +192,7 @@ def test_extract_pair_features_signal_overrides_do_not_overwrite_existing_keys_f
     """Organization features list does not include fuzzy_name; override is silently unused."""
     extractor = _make_mock_extractor({"name_levenshtein": 0.9})
     pair: dict[str, Any] = {
-        "pair_key": "a::b",
+        "pair_key": "a__b",
         "embedding_similarity": 0.8,
         "entity_a": {},
         "entity_b": {},
@@ -293,7 +293,7 @@ def test_score_pairs_with_model_passes_taxonomy_embeddings_to_extractor(
     embeddings = {"BD-1800": [0.1, 0.2]}
     pairs = [
         {
-            "pair_key": "a::b",
+            "pair_key": "a__b",
             "embedding_similarity": 0.88,
             "entity_a": {"name": "Foo"},
             "entity_b": {"name": "Foo"},

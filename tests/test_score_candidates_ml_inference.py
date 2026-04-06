@@ -25,7 +25,7 @@ def test_score_candidates_uses_model_score_when_available(monkeypatch) -> None:
     monkeypatch.setattr(
         score_candidates_module,
         "score_pairs_with_model",
-        lambda **_: {"org-a::org-b": 0.11},
+        lambda **_: {"org-a__org-b": 0.11},
     )
 
     result = score_candidates_module.score_candidates(
@@ -753,7 +753,7 @@ def test_score_candidates_classifies_threshold_bands_and_review_eligibility(
     payload["scoring"]["maybe_threshold"] = 0.6
     config = EntityResolutionRunConfig.model_validate(payload)
 
-    score_by_pair = {"a::b": 0.8, "c::d": 0.6, "e::f": 0.59}
+    score_by_pair = {"a__b": 0.8, "c__d": 0.6, "e__f": 0.59}
 
     def _fake_pre_score_pair(
         *,
@@ -779,7 +779,7 @@ def test_score_candidates_classifies_threshold_bands_and_review_eligibility(
     result = score_candidates_module.score_candidates(
         candidate_pairs=pl.DataFrame(
             {
-                "pair_key": ["a::b", "c::d", "e::f"],
+                "pair_key": ["a__b", "c__d", "e__f"],
                 "entity_a_id": ["a", "c", "e"],
                 "entity_b_id": ["b", "d", "f"],
                 "entity_type": ["organization", "organization", "organization"],
@@ -813,15 +813,15 @@ def test_score_candidates_classifies_threshold_bands_and_review_eligibility(
     )
 
     by_key = {row["pair_key"]: row for row in result.scored_pairs.to_dicts()}
-    assert by_key["a::b"]["pair_outcome"] == "duplicate"
-    assert by_key["a::b"]["predicted_duplicate"] is True
-    assert by_key["a::b"]["review_eligible"] is True
-    assert by_key["c::d"]["pair_outcome"] == "maybe"
-    assert by_key["c::d"]["predicted_duplicate"] is False
-    assert by_key["c::d"]["review_eligible"] is True
-    assert by_key["e::f"]["pair_outcome"] == "below_maybe"
-    assert by_key["e::f"]["predicted_duplicate"] is False
-    assert by_key["e::f"]["review_eligible"] is False
+    assert by_key["a__b"]["pair_outcome"] == "duplicate"
+    assert by_key["a__b"]["predicted_duplicate"] is True
+    assert by_key["a__b"]["review_eligible"] is True
+    assert by_key["c__d"]["pair_outcome"] == "maybe"
+    assert by_key["c__d"]["predicted_duplicate"] is False
+    assert by_key["c__d"]["review_eligible"] is True
+    assert by_key["e__f"]["pair_outcome"] == "below_maybe"
+    assert by_key["e__f"]["predicted_duplicate"] is False
+    assert by_key["e__f"]["review_eligible"] is False
     summary = result.score_delta_summary.row(0, named=True)
     assert summary["duplicate_count"] == 1
     assert summary["maybe_count"] == 1
@@ -965,7 +965,7 @@ def _candidate_pairs() -> pl.DataFrame:
     """Return one canonical candidate-pair row."""
     return pl.DataFrame(
         {
-            "pair_key": ["org-a::org-b"],
+            "pair_key": ["org-a__org-b"],
             "entity_a_id": ["org-a"],
             "entity_b_id": ["org-b"],
             "entity_type": ["organization"],
@@ -1073,7 +1073,7 @@ def _service_candidate_pairs() -> pl.DataFrame:
     """Return one canonical service candidate-pair row."""
     return pl.DataFrame(
         {
-            "pair_key": ["svc-a::svc-b"],
+            "pair_key": ["svc-a__svc-b"],
             "entity_a_id": ["svc-a"],
             "entity_b_id": ["svc-b"],
             "entity_type": ["service"],

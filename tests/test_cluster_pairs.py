@@ -47,9 +47,9 @@ def test_cluster_pairs_splits_triangle_conflict() -> None:
         config=config,
     )
     emitted_keys = set(result.cluster_pairs.get_column("pair_key").to_list())
-    assert emitted_keys.issubset({"a::b", "a::c"})
+    assert emitted_keys.issubset({"a__b", "a__c"})
     assert len(emitted_keys) == 1
-    assert "b::c" not in emitted_keys
+    assert "b__c" not in emitted_keys
 
 
 def test_cluster_pairs_ignores_removed_keys() -> None:
@@ -60,21 +60,21 @@ def test_cluster_pairs_ignores_removed_keys() -> None:
         entity_type="organization",
     )
     finalized = _triangle_fixture()
-    removed = pl.DataFrame({"pair_key": ["a::b"], "cleanup_reason": ["entity_deleted"]})
+    removed = pl.DataFrame({"pair_key": ["a__b"], "cleanup_reason": ["entity_deleted"]})
     result = cluster_pairs(
         finalized_scored_pairs=finalized,
         removed_pair_ids=removed,
         config=config,
     )
     emitted_keys = set(result.cluster_pairs.get_column("pair_key").to_list())
-    assert "a::b" not in emitted_keys
+    assert "a__b" not in emitted_keys
 
 
 def _triangle_fixture() -> pl.DataFrame:
     """Build one triangle with two strong matches and one strong mismatch."""
     return pl.DataFrame(
         {
-            "pair_key": ["a::b", "a::c", "b::c"],
+            "pair_key": ["a__b", "a__c", "b__c"],
             "entity_a_id": ["a", "a", "b"],
             "entity_b_id": ["b", "c", "c"],
             "entity_type": ["organization", "organization", "organization"],

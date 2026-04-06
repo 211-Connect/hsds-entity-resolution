@@ -55,7 +55,7 @@ def test_pipeline_emits_canonical_candidate_pairs() -> None:
     assert result.candidate_pairs.height == 1
     pair = result.candidate_pairs.row(0, named=True)
     assert pair["entity_a_id"] < pair["entity_b_id"]
-    assert pair["pair_key"] == f"{pair['entity_a_id']}::{pair['entity_b_id']}"
+    assert pair["pair_key"] == f"{pair['entity_a_id']}__{pair['entity_b_id']}"
 
 
 def test_pipeline_normalizes_mixed_taxonomy_shapes_to_canonical_contract() -> None:
@@ -343,7 +343,7 @@ def test_pipeline_scope_removed_emits_scope_removed_cleanup_signals() -> None:
     )
     previous_pair_state_index = pl.DataFrame(
         {
-            "pair_key": ["a::b"],
+            "pair_key": ["a__b"],
             "entity_a_id": ["a"],
             "entity_b_id": ["b"],
             "entity_type": ["organization"],
@@ -362,6 +362,6 @@ def test_pipeline_scope_removed_emits_scope_removed_cleanup_signals() -> None:
     assert result.scored_pairs.is_empty()
     assert result.pair_state_index.is_empty()
     assert result.removed_pair_ids.row(0, named=True) == {
-        "pair_key": "a::b",
+        "pair_key": "a__b",
         "cleanup_reason": "scope_removed",
     }

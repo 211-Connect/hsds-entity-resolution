@@ -775,7 +775,7 @@ def _to_candidate_record(
     """Build one canonical candidate record with provenance fields."""
     entity_a_id, entity_b_id = _canonical_pair(anchor["entity_id"], candidate["entity_id"])
     reason_codes = sorted(set(["embedding_threshold", *overlap_reasons]))
-    pair_key = f"{entity_a_id}::{entity_b_id}"
+    pair_key = f"{entity_a_id}__{entity_b_id}"
     source_schema_a = (
         anchor["source_schema"]
         if anchor["entity_id"] == entity_a_id

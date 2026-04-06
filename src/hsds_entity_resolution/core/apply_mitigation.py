@@ -507,8 +507,8 @@ def _normalize_previous_pair_state(frame: pl.DataFrame) -> pl.DataFrame:
     )
     return normalized.with_columns(
         pl.when(pl.col("entity_a_id") < pl.col("entity_b_id"))
-        .then(pl.concat_str([pl.col("entity_a_id"), pl.lit("::"), pl.col("entity_b_id")]))
-        .otherwise(pl.concat_str([pl.col("entity_b_id"), pl.lit("::"), pl.col("entity_a_id")]))
+        .then(pl.concat_str([pl.col("entity_a_id"), pl.lit("__"), pl.col("entity_b_id")]))
+        .otherwise(pl.concat_str([pl.col("entity_b_id"), pl.lit("__"), pl.col("entity_a_id")]))
         .alias("pair_key"),
         pl.lit("").alias("scope_id"),
     )
@@ -640,7 +640,7 @@ def _combine_pair_state_index(
 
 def _pair_ids_from_key(pair_key: str) -> tuple[str, str]:
     """Parse pair key into entity IDs while tolerating malformed values."""
-    parts = pair_key.split("::", maxsplit=1)
+    parts = pair_key.split("__", maxsplit=1)
     if len(parts) != 2:
         return "", ""
     return parts[0], parts[1]

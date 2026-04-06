@@ -220,7 +220,7 @@ def _assert_not_removed(result: Any, pair_key: str) -> None:
 #     stronger deterministic evidence such as address or identifier also matches
 # ---------------------------------------------------------------------------
 
-_PAIR_KEY = "org-a::org-b"
+_PAIR_KEY = "org-a__org-b"
 _SHARED_EMAIL = "hello@north.org"
 _SHARED_PHONE = "555-0100"
 _SHARED_WEBSITE = "north.org"
@@ -642,7 +642,7 @@ def test_s2c_one_entity_deleted_other_changes_entity_deleted_takes_priority() ->
         config=config,
     )
 
-    # entity_deleted takes priority for the org-a::org-b pair.
+    # entity_deleted takes priority for the org-a__org-b pair.
     _assert_removed(run2, _PAIR_KEY, "entity_deleted")
 
 
@@ -755,7 +755,7 @@ def test_s3a_new_strong_pair_joins_existing_cluster() -> None:
     config = _config(team_id="team-s3a", scope_id="s3a")
 
     # Run 1: cluster {A, B}.
-    finalized_run1 = _finalized_pairs(_dup_pair("a::b", "a", "b"))
+    finalized_run1 = _finalized_pairs(_dup_pair("a__b", "a", "b"))
     result_run1 = cluster_pairs(
         finalized_scored_pairs=finalized_run1,
         removed_pair_ids=pl.DataFrame(),
@@ -764,12 +764,12 @@ def test_s3a_new_strong_pair_joins_existing_cluster() -> None:
     assert result_run1.clusters.height == 1
     cluster_id_run1 = result_run1.clusters.row(0, named=True)["cluster_id"]
     members_run1 = set(result_run1.cluster_pairs.get_column("pair_key").to_list())
-    assert members_run1 == {"a::b"}
+    assert members_run1 == {"a__b"}
 
-    # Run 2: new entity C with strong pair to A → both A::B and A::C are duplicate.
+    # Run 2: new entity C with strong pair to A → both A__B and A__C are duplicate.
     finalized_run2 = _finalized_pairs(
-        _dup_pair("a::b", "a", "b"),
-        _dup_pair("a::c", "a", "c"),
+        _dup_pair("a__b", "a", "b"),
+        _dup_pair("a__c", "a", "c"),
     )
     result_run2 = cluster_pairs(
         finalized_scored_pairs=finalized_run2,
@@ -784,8 +784,8 @@ def test_s3a_new_strong_pair_joins_existing_cluster() -> None:
     assert cluster_id_run2 != cluster_id_run1
     assert str(cluster_id_run2).startswith("ccv1::")
     pairs_run2 = set(result_run2.cluster_pairs.get_column("pair_key").to_list())
-    assert "a::b" in pairs_run2
-    assert "a::c" in pairs_run2
+    assert "a__b" in pairs_run2
+    assert "a__c" in pairs_run2
 
 
 def test_s3b_new_maybe_pair_joins_cluster_raises_risk_score() -> None:
@@ -795,7 +795,7 @@ def test_s3b_new_maybe_pair_joins_cluster_raises_risk_score() -> None:
     config = _config(team_id="team-s3b", scope_id="s3b")
 
     # Run 1: {A, B} cluster (both duplicate).
-    finalized_run1 = _finalized_pairs(_dup_pair("a::b", "a", "b"))
+    finalized_run1 = _finalized_pairs(_dup_pair("a__b", "a", "b"))
     result_run1 = cluster_pairs(
         finalized_scored_pairs=finalized_run1,
         removed_pair_ids=pl.DataFrame(),
@@ -806,8 +806,8 @@ def test_s3b_new_maybe_pair_joins_cluster_raises_risk_score() -> None:
     # Run 2: entity C added with a weak maybe-band pair to B only.
     maybe_score = (config.scoring.maybe_threshold + config.scoring.duplicate_threshold) / 2.0
     finalized_run2 = _finalized_pairs(
-        _dup_pair("a::b", "a", "b"),
-        _maybe_pair("b::c", "b", "c", final_score=maybe_score),
+        _dup_pair("a__b", "a", "b"),
+        _maybe_pair("b__c", "b", "c", final_score=maybe_score),
     )
     result_run2 = cluster_pairs(
         finalized_scored_pairs=finalized_run2,
@@ -831,9 +831,9 @@ def test_s3c_pair_weakens_from_duplicate_to_maybe_stays_in_cluster() -> None:
 
     # Run 1: cluster {A, B, C} – all duplicate.
     finalized_run1 = _finalized_pairs(
-        _dup_pair("a::b", "a", "b"),
-        _dup_pair("b::c", "b", "c"),
-        _dup_pair("a::c", "a", "c"),
+        _dup_pair("a__b", "a", "b"),
+        _dup_pair("b__c", "b", "c"),
+        _dup_pair("a__c", "a", "c"),
     )
     result_run1 = cluster_pairs(
         finalized_scored_pairs=finalized_run1,
@@ -844,12 +844,12 @@ def test_s3c_pair_weakens_from_duplicate_to_maybe_stays_in_cluster() -> None:
     risk_run1 = result_run1.clusters.row(0, named=True)["cluster_risk_score"]
     assert risk_run1 == 0.0  # All edges are in duplicate band → zero risk.
 
-    # Run 2: pair B::C drops to maybe band.
+    # Run 2: pair B__C drops to maybe band.
     maybe_score = (config.scoring.maybe_threshold + config.scoring.duplicate_threshold) / 2.0
     finalized_run2 = _finalized_pairs(
-        _dup_pair("a::b", "a", "b"),
-        _maybe_pair("b::c", "b", "c", final_score=maybe_score),
-        _dup_pair("a::c", "a", "c"),
+        _dup_pair("a__b", "a", "b"),
+        _maybe_pair("b__c", "b", "c", final_score=maybe_score),
+        _dup_pair("a__c", "a", "c"),
     )
     result_run2 = cluster_pairs(
         finalized_scored_pairs=finalized_run2,
@@ -878,9 +878,9 @@ def test_s3d_cluster_edge_drops_below_maybe_pair_removed_cluster_shrinks() -> No
 
     # Run 1: fully-connected {A, B, C} with three duplicate pairs.
     finalized_run1 = _finalized_pairs(
-        _dup_pair("a::b", "a", "b"),
-        _dup_pair("b::c", "b", "c"),
-        _dup_pair("a::c", "a", "c"),
+        _dup_pair("a__b", "a", "b"),
+        _dup_pair("b__c", "b", "c"),
+        _dup_pair("a__c", "a", "c"),
     )
     result_run1 = cluster_pairs(
         finalized_scored_pairs=finalized_run1,
@@ -889,14 +889,14 @@ def test_s3d_cluster_edge_drops_below_maybe_pair_removed_cluster_shrinks() -> No
     )
     assert result_run1.clusters.row(0, named=True)["pair_count"] == 3
 
-    # Simulate that A::C dropped below maybe_threshold so it is now removed.
+    # Simulate that A__C dropped below maybe_threshold so it is now removed.
     below_score = config.scoring.maybe_threshold - 0.05
-    removed_pair_ac = pl.DataFrame({"pair_key": ["a::c"], "cleanup_reason": ["score_dropped"]})
+    removed_pair_ac = pl.DataFrame({"pair_key": ["a__c"], "cleanup_reason": ["score_dropped"]})
     finalized_run2 = _finalized_pairs(
-        _dup_pair("a::b", "a", "b"),
-        _dup_pair("b::c", "b", "c"),
+        _dup_pair("a__b", "a", "b"),
+        _dup_pair("b__c", "b", "c"),
         {
-            **_maybe_pair("a::c", "a", "c"),
+            **_maybe_pair("a__c", "a", "c"),
             "final_score": below_score,
             "review_eligible": False,
         },
@@ -907,13 +907,13 @@ def test_s3d_cluster_edge_drops_below_maybe_pair_removed_cluster_shrinks() -> No
         config=config,
     )
 
-    # A::B and B::C remain; A, B, C are still connected through B.
+    # A__B and B__C remain; A, B, C are still connected through B.
     assert result_run2.clusters.height == 1
     cluster_run2 = result_run2.clusters.row(0, named=True)
     assert cluster_run2["cluster_size"] == 3
-    assert cluster_run2["pair_count"] == 2  # A::C is gone.
+    assert cluster_run2["pair_count"] == 2  # A__C is gone.
     pairs_run2 = set(result_run2.cluster_pairs.get_column("pair_key").to_list())
-    assert "a::c" not in pairs_run2
+    assert "a__c" not in pairs_run2
 
 
 def test_s3e_bridge_entity_deleted_cluster_may_fragment() -> None:
@@ -923,12 +923,12 @@ def test_s3e_bridge_entity_deleted_cluster_may_fragment() -> None:
 
     # Finalized pairs: A-B (dup) and B-C (dup); no direct A-C pair.
     finalized_with_bridge = _finalized_pairs(
-        _dup_pair("a::b", "a", "b"),
-        _dup_pair("b::c", "b", "c"),
+        _dup_pair("a__b", "a", "b"),
+        _dup_pair("b__c", "b", "c"),
     )
     removed_b_pairs = pl.DataFrame(
         {
-            "pair_key": ["a::b", "b::c"],
+            "pair_key": ["a__b", "b__c"],
             "cleanup_reason": ["entity_deleted", "entity_deleted"],
         }
     )
@@ -950,13 +950,13 @@ def test_s3e_bridge_deleted_but_direct_link_survives() -> None:
     config = _config(team_id="team-s3e-v2", scope_id="s3e-v2")
 
     finalized = _finalized_pairs(
-        _dup_pair("a::b", "a", "b"),
-        _dup_pair("b::c", "b", "c"),
-        _dup_pair("a::c", "a", "c"),
+        _dup_pair("a__b", "a", "b"),
+        _dup_pair("b__c", "b", "c"),
+        _dup_pair("a__c", "a", "c"),
     )
     removed_b = pl.DataFrame(
         {
-            "pair_key": ["a::b", "b::c"],
+            "pair_key": ["a__b", "b__c"],
             "cleanup_reason": ["entity_deleted", "entity_deleted"],
         }
     )
@@ -972,7 +972,7 @@ def test_s3e_bridge_deleted_but_direct_link_survives() -> None:
     cluster = result.clusters.row(0, named=True)
     assert cluster["cluster_size"] == 2
     pairs = set(result.cluster_pairs.get_column("pair_key").to_list())
-    assert "a::c" in pairs
+    assert "a__c" in pairs
 
 
 def test_s3f_two_clusters_merge_via_new_cross_cluster_pair() -> None:
@@ -982,8 +982,8 @@ def test_s3f_two_clusters_merge_via_new_cross_cluster_pair() -> None:
 
     # Run 1: two independent 2-node clusters.
     finalized_run1 = _finalized_pairs(
-        _dup_pair("a::b", "a", "b"),
-        _dup_pair("c::d", "c", "d"),
+        _dup_pair("a__b", "a", "b"),
+        _dup_pair("c__d", "c", "d"),
     )
     result_run1 = cluster_pairs(
         finalized_scored_pairs=finalized_run1,
@@ -992,11 +992,11 @@ def test_s3f_two_clusters_merge_via_new_cross_cluster_pair() -> None:
     )
     assert result_run1.clusters.height == 2
 
-    # Run 2: new duplicate pair B::C bridges the two clusters.
+    # Run 2: new duplicate pair B__C bridges the two clusters.
     finalized_run2 = _finalized_pairs(
-        _dup_pair("a::b", "a", "b"),
-        _dup_pair("b::c", "b", "c"),
-        _dup_pair("c::d", "c", "d"),
+        _dup_pair("a__b", "a", "b"),
+        _dup_pair("b__c", "b", "c"),
+        _dup_pair("c__d", "c", "d"),
     )
     result_run2 = cluster_pairs(
         finalized_scored_pairs=finalized_run2,
@@ -1008,18 +1008,18 @@ def test_s3f_two_clusters_merge_via_new_cross_cluster_pair() -> None:
     merged = result_run2.clusters.row(0, named=True)
     assert merged["cluster_size"] == 4
     pair_keys = set(result_run2.cluster_pairs.get_column("pair_key").to_list())
-    assert {"a::b", "b::c", "c::d"}.issubset(pair_keys)
+    assert {"a__b", "b__c", "c__d"}.issubset(pair_keys)
 
 
 def test_s3g_contradictory_triangle_limits_transitive_closure() -> None:
     """S3-G: When A≡B (duplicate) and A≡C (duplicate) but B and C are not matched,
-    the clustering algorithm avoids assigning both A::B and A::C to the same cluster.
+    the clustering algorithm avoids assigning both A__B and A__C to the same cluster.
     This mirrors the existing test_cluster_pairs_splits_triangle_conflict fixture."""
     config = _config(team_id="team-s3g", scope_id="s3g")
 
     finalized = pl.DataFrame(
         {
-            "pair_key": ["a::b", "a::c", "b::c"],
+            "pair_key": ["a__b", "a__c", "b__c"],
             "entity_a_id": ["a", "a", "b"],
             "entity_b_id": ["b", "c", "c"],
             "entity_type": ["organization", "organization", "organization"],
@@ -1041,11 +1041,11 @@ def test_s3g_contradictory_triangle_limits_transitive_closure() -> None:
     )
 
     emitted_keys = set(result.cluster_pairs.get_column("pair_key").to_list())
-    # b::c is not a duplicate pair and must never appear as a cluster pair.
-    assert "b::c" not in emitted_keys
+    # b__c is not a duplicate pair and must never appear as a cluster pair.
+    assert "b__c" not in emitted_keys
     # The triangle structure must not produce all three pairs in one cluster;
     # at most one of the two genuine duplicate pairs ends up in cluster output.
-    assert emitted_keys.issubset({"a::b", "a::c"})
+    assert emitted_keys.issubset({"a__b", "a__c"})
 
 
 # ===========================================================================
@@ -1578,9 +1578,9 @@ def test_s6d_scope_decommission_emits_scope_removed_for_all_retained_pairs() -> 
     config = _config(team_id="team-s6d", scope_id="s6d")
     previous_pair_state = pl.DataFrame(
         [
-            _pair_state_row("a::b", "a", "b", "s6d"),
-            _pair_state_row("c::d", "c", "d", "s6d"),
-            _pair_state_row("e::f", "e", "f", "s6d"),
+            _pair_state_row("a__b", "a", "b", "s6d"),
+            _pair_state_row("c__d", "c", "d", "s6d"),
+            _pair_state_row("e__f", "e", "f", "s6d"),
         ]
     )
     result = run_incremental(
@@ -1598,9 +1598,9 @@ def test_s6d_scope_decommission_emits_scope_removed_for_all_retained_pairs() -> 
     removed_by_key = {
         row["pair_key"]: row["cleanup_reason"] for row in result.removed_pair_ids.to_dicts()
     }
-    assert removed_by_key.get("a::b") == "scope_removed"
-    assert removed_by_key.get("c::d") == "scope_removed"
-    assert removed_by_key.get("e::f") == "scope_removed"
+    assert removed_by_key.get("a__b") == "scope_removed"
+    assert removed_by_key.get("c__d") == "scope_removed"
+    assert removed_by_key.get("e__f") == "scope_removed"
 
 
 # ---------------------------------------------------------------------------

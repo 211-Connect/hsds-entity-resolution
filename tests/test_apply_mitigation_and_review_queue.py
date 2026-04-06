@@ -26,7 +26,7 @@ def test_apply_mitigation_emits_reconciliation_without_clusters() -> None:
     config = _config_with_mitigation(team_id="team-1", scope_id="scope-1")
     scored_pairs = pl.DataFrame(
         {
-            "pair_key": ["a::b", "a::c", "x::y"],
+            "pair_key": ["a__b", "a__c", "x__y"],
             "entity_a_id": ["a", "a", "x"],
             "entity_b_id": ["b", "c", "y"],
             "entity_type": ["organization", "organization", "organization"],
@@ -42,7 +42,7 @@ def test_apply_mitigation_emits_reconciliation_without_clusters() -> None:
     )
     pair_reasons = pl.DataFrame(
         {
-            "pair_key": ["a::b", "x::y"],
+            "pair_key": ["a__b", "x__y"],
             "match_type": ["name_similarity", "name_similarity"],
             "raw_contribution": [0.9, 0.9],
             "weighted_contribution": [0.9, 0.9],
@@ -66,8 +66,8 @@ def test_apply_mitigation_emits_reconciliation_without_clusters() -> None:
     )
 
     removed = {row["pair_key"]: row["cleanup_reason"] for row in result.removed_pair_ids.to_dicts()}
-    assert removed["a::c"] == "low_evidence_override"
-    assert removed["x::y"] == "entity_deleted"
+    assert removed["a__c"] == "low_evidence_override"
+    assert removed["x__y"] == "entity_deleted"
 
 
 def test_apply_mitigation_counts_only_contributing_reasons() -> None:
@@ -75,7 +75,7 @@ def test_apply_mitigation_counts_only_contributing_reasons() -> None:
     config = _config_with_mitigation(team_id="team-1b", scope_id="scope-1b")
     scored_pairs = pl.DataFrame(
         {
-            "pair_key": ["a::b"],
+            "pair_key": ["a__b"],
             "entity_a_id": ["a"],
             "entity_b_id": ["b"],
             "entity_type": ["organization"],
@@ -91,7 +91,7 @@ def test_apply_mitigation_counts_only_contributing_reasons() -> None:
     )
     pair_reasons = pl.DataFrame(
         {
-            "pair_key": ["a::b"],
+            "pair_key": ["a__b"],
             "match_type": ["name_similarity"],
             "raw_contribution": [0.25],
             "weighted_contribution": [0.0],
@@ -119,7 +119,7 @@ def test_apply_mitigation_keeps_low_embedding_pair_with_contributing_reason() ->
     config = _config_with_mitigation(team_id="team-1c", scope_id="scope-1c")
     scored_pairs = pl.DataFrame(
         {
-            "pair_key": ["a::b"],
+            "pair_key": ["a__b"],
             "entity_a_id": ["a"],
             "entity_b_id": ["b"],
             "entity_type": ["organization"],
@@ -135,7 +135,7 @@ def test_apply_mitigation_keeps_low_embedding_pair_with_contributing_reason() ->
     )
     pair_reasons = pl.DataFrame(
         {
-            "pair_key": ["a::b"],
+            "pair_key": ["a__b"],
             "match_type": ["shared_phone"],
             "raw_contribution": [1.0],
             "weighted_contribution": [0.2],
@@ -162,7 +162,7 @@ def test_cluster_pairs_emits_stable_membership_hash_ids() -> None:
     config = _config_with_mitigation(team_id="team-1a", scope_id="scope-1a")
     finalized = pl.DataFrame(
         {
-            "pair_key": ["a::b", "b::c", "a::c"],
+            "pair_key": ["a__b", "b__c", "a__c"],
             "entity_a_id": ["a", "b", "a"],
             "entity_b_id": ["b", "c", "c"],
             "entity_type": ["organization", "organization", "organization"],
@@ -200,7 +200,7 @@ def test_materialize_review_queue_filters_and_orders_pairs() -> None:
     config = _config_with_mitigation(team_id="team-2", scope_id="scope-2")
     finalized = pl.DataFrame(
         {
-            "pair_key": ["a::b", "b::c", "d::e"],
+            "pair_key": ["a__b", "b__c", "d__e"],
             "entity_a_id": ["a", "b", "d"],
             "entity_b_id": ["b", "c", "e"],
             "predicted_duplicate": [True, True, False],
@@ -208,7 +208,7 @@ def test_materialize_review_queue_filters_and_orders_pairs() -> None:
             "embedding_similarity": [0.8, 0.9, 0.95],
         }
     )
-    removed = pl.DataFrame({"pair_key": ["a::b"], "cleanup_reason": ["entity_deleted"]})
+    removed = pl.DataFrame({"pair_key": ["a__b"], "cleanup_reason": ["entity_deleted"]})
 
     clusters = pl.DataFrame(
         {
@@ -229,7 +229,7 @@ def test_materialize_review_queue_filters_and_orders_pairs() -> None:
     cluster_pairs_frame = pl.DataFrame(
         {
             "cluster_id": ["cluster-1"],
-            "pair_key": ["b::c"],
+            "pair_key": ["b__c"],
             "is_reviewed": [None],
             "review_decision": [None],
             "assignment_score": [0.5],
@@ -246,7 +246,7 @@ def test_materialize_review_queue_filters_and_orders_pairs() -> None:
 
     assert result.review_queue_items.height == 1
     queue_row = result.review_queue_items.row(0, named=True)
-    assert queue_row["pair_key"] == "b::c"
+    assert queue_row["pair_key"] == "b__c"
     assert queue_row["team_id"] == "team-2"
 
 
@@ -259,7 +259,7 @@ def test_materialize_review_queue_includes_maybe_tier_and_excludes_below_maybe()
     )
     finalized = pl.DataFrame(
         {
-            "pair_key": ["dup::edge", "maybe::edge", "below::edge"],
+            "pair_key": ["dup__edge", "maybe__edge", "below__edge"],
             "entity_a_id": ["a", "c", "e"],
             "entity_b_id": ["b", "d", "f"],
             "predicted_duplicate": [True, False, False],
@@ -283,7 +283,7 @@ def test_materialize_review_queue_includes_maybe_tier_and_excludes_below_maybe()
     )
 
     queue_keys = set(result.review_queue_items.get_column("pair_key").to_list())
-    assert queue_keys == {"dup::edge", "maybe::edge"}
+    assert queue_keys == {"dup__edge", "maybe__edge"}
 
 
 def test_apply_mitigation_emits_candidate_lost_from_previous_state() -> None:
@@ -295,7 +295,7 @@ def test_apply_mitigation_emits_candidate_lost_from_previous_state() -> None:
     )
     previous_pair_state_index = pl.DataFrame(
         {
-            "pair_key": ["a::b"],
+            "pair_key": ["a__b"],
             "entity_a_id": ["a"],
             "entity_b_id": ["b"],
             "entity_type": ["organization"],
@@ -312,7 +312,7 @@ def test_apply_mitigation_emits_candidate_lost_from_previous_state() -> None:
     )
     assert result.removed_pair_ids.height == 1
     assert result.removed_pair_ids.row(0, named=True) == {
-        "pair_key": "a::b",
+        "pair_key": "a__b",
         "cleanup_reason": "candidate_lost",
     }
 
@@ -326,7 +326,7 @@ def test_apply_mitigation_preserves_unaffected_previous_pairs_during_partial_run
     )
     previous_pair_state_index = pl.DataFrame(
         {
-            "pair_key": ["a::b", "c::d"],
+            "pair_key": ["a__b", "c__d"],
             "entity_a_id": ["a", "c"],
             "entity_b_id": ["b", "d"],
             "entity_type": ["organization", "organization"],
@@ -344,12 +344,12 @@ def test_apply_mitigation_preserves_unaffected_previous_pairs_during_partial_run
     )
     assert result.removed_pair_ids.height == 1
     assert result.removed_pair_ids.row(0, named=True) == {
-        "pair_key": "a::b",
+        "pair_key": "a__b",
         "cleanup_reason": "candidate_lost",
     }
     assert result.pair_state_index.height == 1
     assert result.pair_state_index.row(0, named=True) == {
-        "pair_key": "c::d",
+        "pair_key": "c__d",
         "entity_a_id": "c",
         "entity_b_id": "d",
         "entity_type": "organization",
@@ -367,7 +367,7 @@ def test_apply_mitigation_emits_score_dropped_from_previous_state() -> None:
     )
     scored_pairs = pl.DataFrame(
         {
-            "pair_key": ["a::b"],
+            "pair_key": ["a__b"],
             "entity_a_id": ["a"],
             "entity_b_id": ["b"],
             "entity_type": ["organization"],
@@ -383,7 +383,7 @@ def test_apply_mitigation_emits_score_dropped_from_previous_state() -> None:
     )
     previous_pair_state_index = pl.DataFrame(
         {
-            "pair_key": ["a::b"],
+            "pair_key": ["a__b"],
             "entity_a_id": ["a"],
             "entity_b_id": ["b"],
             "entity_type": ["organization"],
@@ -399,7 +399,7 @@ def test_apply_mitigation_emits_score_dropped_from_previous_state() -> None:
         config=config,
     )
     removed = {row["pair_key"]: row["cleanup_reason"] for row in result.removed_pair_ids.to_dicts()}
-    assert removed["a::b"] == "score_dropped"
+    assert removed["a__b"] == "score_dropped"
 
 
 def test_apply_mitigation_emits_scope_removed_when_scope_is_decommissioned() -> None:
@@ -411,7 +411,7 @@ def test_apply_mitigation_emits_scope_removed_when_scope_is_decommissioned() -> 
     )
     previous_pair_state_index = pl.DataFrame(
         {
-            "pair_key": ["a::b", "c::d"],
+            "pair_key": ["a__b", "c__d"],
             "entity_a_id": ["a", "c"],
             "entity_b_id": ["b", "d"],
             "entity_type": ["organization", "organization"],
@@ -428,5 +428,5 @@ def test_apply_mitigation_emits_scope_removed_when_scope_is_decommissioned() -> 
         scope_removed=True,
     )
     removed = {row["pair_key"]: row["cleanup_reason"] for row in result.removed_pair_ids.to_dicts()}
-    assert removed["a::b"] == "scope_removed"
-    assert removed["c::d"] == "scope_removed"
+    assert removed["a__b"] == "scope_removed"
+    assert removed["c__d"] == "scope_removed"
