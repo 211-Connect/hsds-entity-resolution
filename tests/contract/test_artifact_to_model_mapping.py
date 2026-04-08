@@ -120,6 +120,7 @@ def test_artifacts_map_cleanly_to_runtime_models() -> None:
             scope_id="scope-1",
             target_schemas=["NE211", "DUPAGEC211"],
             entity_type="organization",
+            job_name="fixture_job",
             config=config,
         ),
     )
@@ -202,6 +203,7 @@ def test_service_artifacts_with_taxonomy_term_ids_map_cleanly_to_runtime_models(
             scope_id="scope-1",
             target_schemas=["NE211", "DUPAGEC211"],
             entity_type="service",
+            job_name="fixture_job",
             config=config,
         ),
     )
@@ -234,11 +236,13 @@ def test_deduplication_run_mapping_uses_duplicate_count_for_threshold_metrics() 
             scope_id="scope-1",
             target_schemas=["NE211", "DUPAGEC211"],
             entity_type="organization",
+            job_name="il211_regional",
             config=config,
         ),
         now_value="2026-03-06T00:00:00+00:00",
     )
     row = mapped.row(0, named=True)
+    assert row["JOB_NAME"] == "il211_regional"
     assert row["TARGET_SCHEMAS"] == ["NE211", "DUPAGEC211"]
     assert row["PAIRS_ABOVE_THRESHOLD"] == 2
     assert row["PAIRS_PREDICTED_DUPLICATE"] == 2
@@ -279,6 +283,7 @@ def test_duplicate_reason_ids_are_scoped_to_the_score_row() -> None:
             scope_id="scope-1",
             target_schemas=["TENANT_A"],
             entity_type="service",
+            job_name="fixture_job",
             config=config,
         ),
         created_at="2026-03-27T00:00:00+00:00",
@@ -292,6 +297,7 @@ def test_duplicate_reason_ids_are_scoped_to_the_score_row() -> None:
             scope_id="scope-1",
             target_schemas=["TENANT_A"],
             entity_type="service",
+            job_name="fixture_job",
             config=config,
         ),
         created_at="2026-03-27T01:00:00+00:00",
@@ -339,6 +345,7 @@ def test_duplicate_reason_ids_ignore_mutable_scores_within_one_score_row() -> No
             scope_id="scope-1",
             target_schemas=["TENANT_A"],
             entity_type="service",
+            job_name="fixture_job",
             config=config,
         ),
         created_at="2026-03-27T00:00:00+00:00",
@@ -364,6 +371,7 @@ def test_duplicate_reason_ids_ignore_mutable_scores_within_one_score_row() -> No
             scope_id="scope-1",
             target_schemas=["TENANT_A"],
             entity_type="service",
+            job_name="fixture_job",
             config=config,
         ),
         created_at="2026-03-27T01:00:00+00:00",

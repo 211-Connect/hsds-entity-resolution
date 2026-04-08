@@ -110,6 +110,7 @@ def test_consumer_adapter_runs_end_to_end_with_fake_persistence(tmp_path: Path) 
     request = ConsumerRunRequest(
         team_id="team-1",
         scope_id="scope-1",
+        job_name="test_fixture",
         target_schemas=["NE211", "DUPAGEC211"],
         entity_type="organization",
         organization_entities=pl.DataFrame(

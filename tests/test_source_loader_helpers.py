@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import cast
 
+import polars as pl
 from consumer.consumer_adapter.source_loader import (
+    _ORGANIZATION_FRAME_SCHEMA,
+    _as_location_list,
     _literal_list,
     _load_organizations,
     _load_services,
@@ -21,6 +25,50 @@ def test_literal_list_escapes_single_quotes() -> None:
     """Literal list renderer should escape single-quote characters."""
     rendered = _literal_list(["A", "B'C"])
     assert rendered == "'A', 'B''C'"
+
+
+def test_as_location_list_coerces_integer_coordinates_to_float() -> None:
+    """Whole-number lat/lon from JSON must become float so Polars Float64 structs build cleanly."""
+    ints = [{"location_id": "1", "latitude": -103, "longitude": 35}]
+    normalized = _as_location_list(ints)
+    assert normalized[0]["latitude"] == -103.0
+    assert normalized[0]["longitude"] == 35.0
+
+    mixed = [{"latitude": -103, "longitude": 35.5}, {"latitude": 40.1, "longitude": -74}]
+    from_json = _as_location_list(json.dumps(mixed))
+    assert from_json[0]["longitude"] == 35.5
+    assert from_json[1]["longitude"] == -74.0
+
+    invalid = [{"latitude": "n/a", "longitude": 1}]
+    cleared = _as_location_list(invalid)
+    assert cleared[0]["latitude"] is None
+    assert cleared[0]["longitude"] == 1.0
+
+    batch = [
+        {
+            "entity_id": "e1",
+            "source_schema": "S",
+            "name": "n",
+            "description": "",
+            "emails": [],
+            "phones": [],
+            "websites": [],
+            "locations": _as_location_list([{"latitude": -103, "longitude": 35}]),
+            "taxonomies": [],
+            "identifiers": [],
+            "services_rollup": [],
+            "display_name": None,
+            "display_description": None,
+            "alternate_name": None,
+            "short_description": None,
+            "resource_writer_name": None,
+            "assured_date": None,
+            "assurer_email": None,
+            "original_id": None,
+        }
+    ]
+    frame = pl.DataFrame(batch, schema=_ORGANIZATION_FRAME_SCHEMA)
+    assert frame.height == 1
 
 
 class _FakeCursor:

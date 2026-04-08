@@ -157,6 +157,7 @@ def test_mapped_frames_match_schema_contract_columns() -> None:
             scope_id="scope-1",
             target_schemas=["NE211", "DUPAGEC211"],
             entity_type="organization",
+            job_name="fixture_job",
             config=config,
         ),
     )

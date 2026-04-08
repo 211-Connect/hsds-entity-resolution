@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from math import exp
 from dataclasses import dataclass
+from math import exp
 from typing import Any
 
 import polars as pl
@@ -765,9 +765,7 @@ def _shadow_log_odds(
     config: EntityResolutionRunConfig,
 ) -> float:
     """Compute shadow calibration log-odds from unsaturated additive evidence."""
-    deterministic_evidence = sum(
-        float(reason["weighted_contribution"]) for reason in det_reasons
-    )
+    deterministic_evidence = sum(float(reason["weighted_contribution"]) for reason in det_reasons)
     nlp_evidence = config.scoring.nlp_section_weight * float(nlp_score)
     ml_evidence = (
         config.scoring.ml_section_weight * float(ml_score) if ml_score is not None else 0.0
