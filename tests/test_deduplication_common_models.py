@@ -13,7 +13,7 @@ from consumer.consumer_types.deduplication_common import (
 def test_common_schema_model_registry_has_all_expected_tables() -> None:
     """The registry should mirror the TypeScript `Database` table map."""
 
-    assert len(COMMON_SCHEMA_TABLE_MODELS) == 13
+    assert len(COMMON_SCHEMA_TABLE_MODELS) == 17
     assert "DUPLICATE_PAIRS" in COMMON_SCHEMA_TABLE_MODELS
     assert "DENORMALIZED_ORGANIZATION_CACHE" in COMMON_SCHEMA_TABLE_MODELS
 
