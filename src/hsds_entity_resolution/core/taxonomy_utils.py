@@ -35,7 +35,7 @@ def clean_taxonomy_objects(value: object) -> list[JsonObject]:
     taxonomy-term identifier is present, it is preserved under the canonical
     ``taxonomy_term_id`` key so downstream persistence can reconstruct the
     denormalized cache rows. All other source fields (``name``,
-    ``description``, etc.) are preserved. Objects are deduplicated by
+    ``description``, ``taxonomy_system_name``, etc.) are preserved. Objects are deduplicated by
     normalised code and sorted by ``code`` for deterministic content hashing.
     """
     if not isinstance(value, list):

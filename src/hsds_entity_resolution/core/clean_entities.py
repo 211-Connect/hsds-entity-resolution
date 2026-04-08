@@ -237,6 +237,7 @@ def _clean_entity_row(*, row: RawEntityRowInput, entity_type: EntityType) -> Cle
         "assured_date": _passthrough_optional(row.get("assured_date")),
         "assurer_email": _passthrough_optional(row.get("assurer_email")),
         "original_id": _passthrough_optional(row.get("original_id")),
+        "organization_original_id": _passthrough_optional(row.get("organization_original_id")),
     }
 
 

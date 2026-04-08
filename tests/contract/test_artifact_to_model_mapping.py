@@ -167,6 +167,7 @@ def test_service_artifacts_with_taxonomy_term_ids_map_cleanly_to_runtime_models(
             ],
             "organization_name": ["Org", "Org"],
             "organization_id": ["org-1", "org-1"],
+            "organization_original_id": ["ext-org-1", "ext-org-1"],
             "embedding_vector": [[1.0, 0.0], [0.99, 0.01]],
         }
     )
@@ -211,6 +212,7 @@ def test_service_artifacts_with_taxonomy_term_ids_map_cleanly_to_runtime_models(
     assert validation.is_valid
     service_rows = mapped.table_frames["DENORMALIZED_SERVICE_CACHE"].to_dicts()
     assert service_rows[0]["TAXONOMIES"][0]["taxonomy_term_id"] == "tax-svc-1"
+    assert service_rows[0]["ORGANIZATION_ORIGINAL_ID"] == "ext-org-1"
 
 
 def test_deduplication_run_mapping_uses_duplicate_count_for_threshold_metrics() -> None:

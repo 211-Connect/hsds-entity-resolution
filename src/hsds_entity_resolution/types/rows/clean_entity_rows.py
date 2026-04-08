@@ -27,6 +27,7 @@ class RawEntityRowInput(TypedDict, total=False):
     services_rollup: object
     organization_name: object
     organization_id: object
+    organization_original_id: object
     embedding_vector: object
     embedding: object
     # Display-quality passthrough fields: original casing, not used for hashing or embeddings.
@@ -81,3 +82,4 @@ class CleanEntityRow(CleanPayloadValues):
     assured_date: str | None
     assurer_email: str | None
     original_id: str | None
+    organization_original_id: str | None

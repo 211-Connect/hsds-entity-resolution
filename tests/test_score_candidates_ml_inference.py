@@ -1133,6 +1133,7 @@ def _normalized_service_rows(*, include_overlap: bool) -> pl.DataFrame:
             ],
             "organization_name": ["Alpha Org", "Alpha Org"],
             "organization_id": ["org-1", "org-1"],
+            "organization_original_id": [None, None],
             "embedding_vector": [[0.9, 0.1], [0.91, 0.09]],
             "source_schema": ["211HSIS", "211HSIS"],
         }

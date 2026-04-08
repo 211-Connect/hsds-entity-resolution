@@ -38,6 +38,7 @@ CLEAN_ENTITY_SCHEMA: dict[str, Any] = {
     "services_rollup": pl.Object,
     "organization_name": pl.String,
     "organization_id": pl.String,
+    "organization_original_id": pl.String,
     # Display-quality passthrough fields: original casing, passed through unchanged.
     "display_name": pl.String,
     "display_description": pl.String,

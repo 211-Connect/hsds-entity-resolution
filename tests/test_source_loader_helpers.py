@@ -156,6 +156,7 @@ def test_dbt_staged_loaders_only_organizations_supply_identifiers() -> None:
             "SOURCE_SCHEMA",
             "ORIGINAL_ID",
             "ORGANIZATION_ID",
+            "ORGANIZATION_ORIGINAL_ID",
             "ORGANIZATION_NAME",
             "NAME",
             "ALTERNATE_NAME",
@@ -181,6 +182,7 @@ def test_dbt_staged_loaders_only_organizations_supply_identifiers() -> None:
                 "IL211",
                 "svc-original-1",
                 "org-1",
+                "org-original-1",
                 "Alpha Org",
                 "Case Management",
                 None,
@@ -212,3 +214,4 @@ def test_dbt_staged_loaders_only_organizations_supply_identifiers() -> None:
     assert "identifiers" not in services.columns
     assert org_row["identifiers"] == [{"identifier_type": "npi", "identifier": "123"}]
     assert svc_row["organization_id"] == "org-1"
+    assert svc_row["organization_original_id"] == "org-original-1"

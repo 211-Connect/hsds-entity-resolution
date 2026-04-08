@@ -56,6 +56,7 @@ def test_denormalized_organization_cache_row_accepts_nested_payloads() -> None:
                     "code": "X",
                     "name": "Support",
                     "description": None,
+                    "taxonomy_system_name": "211 LA Taxonomy",
                 }
             ],
             "SERVICES": [
@@ -69,6 +70,7 @@ def test_denormalized_organization_cache_row_accepts_nested_payloads() -> None:
                             "code": "Y",
                             "name": "Food",
                             "description": None,
+                            "taxonomy_system_name": "211 LA Taxonomy",
                         }
                     ],
                 }
@@ -80,6 +82,8 @@ def test_denormalized_organization_cache_row_accepts_nested_payloads() -> None:
     assert row.ID == "org-1"
     assert row.LOCATIONS[0].city == "San Francisco"
     assert row.SERVICES[0].taxonomy_codes[0].taxonomy_term_id == "st-1"
+    assert row.TAXONOMIES[0].taxonomy_system_name == "211 LA Taxonomy"
+    assert row.SERVICES[0].taxonomy_codes[0].taxonomy_system_name == "211 LA Taxonomy"
 
 
 def test_data_quality_flag_row_validates_target_side_literal() -> None:

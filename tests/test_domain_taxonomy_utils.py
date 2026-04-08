@@ -384,6 +384,21 @@ class TestCleanTaxonomyObjects:
         assert result[0]["taxonomy_term_id"] == "tax-1"
         assert result[0]["code"] == "bd-1800"
 
+    def test_taxonomy_system_name_preserved_when_present(self) -> None:
+        """Denormalized taxonomy rows may carry the parent taxonomy system label."""
+        result = clean_taxonomy_objects(
+            [
+                {
+                    "taxonomy_term_id": "tax-1",
+                    "code": "fl-6500",
+                    "name": "Municipal Police",
+                    "taxonomy_system_name": "Open Eligibility",
+                }
+            ]
+        )
+        assert len(result) == 1
+        assert result[0]["taxonomy_system_name"] == "Open Eligibility"
+
     def test_duplicate_codes_deduplicated_first_in_wins(self) -> None:
         """When two items resolve to the same code, the first one is kept."""
         result = clean_taxonomy_objects(
