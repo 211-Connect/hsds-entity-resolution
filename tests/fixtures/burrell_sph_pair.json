@@ -1,0 +1,136 @@
+{
+  "_comment": "Real duplicate-pair seed queried from Snowflake on 2026-04-09. Two Burrell Behavioral Health locations both list Suicide Prevention Hotlines as a service under the same AIRS taxonomy code, share the national 988 hotline number, share an org contact email, and have an identical description — but sit at different physical addresses (Branson vs Marshfield, MO). configurable-readers publishes both because they are at distinct locations.",
+  "source": {
+    "database": "DEDUPLICATION",
+    "schema": "ER_RUNTIME",
+    "run_id": "er-6e923fd76fa14732902d005ac21e96b4",
+    "team_id": "IL211",
+    "source_schema": "uwgsl211",
+    "queried_at": "2026-04-09"
+  },
+  "pair": {
+    "id": "aa4da335-99fc-58ae-970c-ded5d2e5779b__b71c103f-32d8-5514-ac00-2a86c0a13acf",
+    "entity_type": "service",
+    "confidence_score": 0.7443181818,
+    "shadow_confidence_score": 0.6410674063,
+    "predicted_duplicate": true,
+    "deterministic_section_score": 0.4886363636,
+    "nlp_section_score": 1.0,
+    "ml_section_score": null,
+    "embedding_similarity": 1.0,
+    "scoring_note": "Service thresholds: dup=0.70, maybe=0.62. ML absent for services; final = det×0.50 + nlp×0.50 ≈ 0.4886×0.5 + 1.0×0.5 = 0.7443."
+  },
+  "match_reasons": [
+    {
+      "match_type": "name_similarity",
+      "raw_contribution": 1.0,
+      "weighted_contribution": 1.0,
+      "signal_weight": 1.0,
+      "matched_value": null,
+      "entity_a_value": "suicide prevention hotlines",
+      "entity_b_value": "suicide prevention hotlines",
+      "similarity_score": 1.0,
+      "note": "Exact name match — the dominant signal (NLP section weight 0.40 → 0.50 normalised without ML)"
+    },
+    {
+      "match_type": "shared_email",
+      "raw_contribution": 1.0,
+      "weighted_contribution": 0.16,
+      "signal_weight": 0.16,
+      "matched_value": "rebecca.randolph@burrellcenter.com",
+      "entity_a_value": "rebecca.randolph@burrellcenter.com",
+      "entity_b_value": "rebecca.randolph@burrellcenter.com",
+      "similarity_score": null,
+      "note": "Same Burrell coordinator email on both records"
+    },
+    {
+      "match_type": "shared_taxonomy",
+      "raw_contribution": 1.0,
+      "weighted_contribution": 0.12,
+      "signal_weight": 0.12,
+      "matched_value": "rp-1500.1400-800",
+      "entity_a_value": "rp-1500.1400-800",
+      "entity_b_value": "rp-1500.1400-800",
+      "similarity_score": 1.0,
+      "note": "Both tagged with HSIS Suicide Prevention Hotlines taxonomy code"
+    },
+    {
+      "match_type": "shared_phone",
+      "raw_contribution": 0.5,
+      "weighted_contribution": 0.11,
+      "signal_weight": 0.22,
+      "matched_value": "988",
+      "entity_a_value": "417-893-7740, 988",
+      "entity_b_value": "417-761-5000, 988",
+      "similarity_score": null,
+      "note": "Both list the national 988 hotline; each has a distinct local line (Branson vs Marshfield). Partial match raw=0.5 because only one of two phones overlaps."
+    },
+    {
+      "match_type": "shared_domain",
+      "raw_contribution": 1.0,
+      "weighted_contribution": 0.04,
+      "signal_weight": 0.04,
+      "matched_value": "burrellcenter.com",
+      "entity_a_value": "burrellcenter.com",
+      "entity_b_value": "burrellcenter.com",
+      "similarity_score": null,
+      "note": "Both websites hosted on burrellcenter.com"
+    }
+  ],
+  "entity_a": {
+    "entity_id": "aa4da335-99fc-58ae-970c-ded5d2e5779b",
+    "original_id": "34462",
+    "name": "Suicide Prevention Hotlines",
+    "organization_name": "BURRELL BEHAVIORAL HEALTH",
+    "description": "Provides a 24-hour suicide prevention hotline.",
+    "emails": ["rebecca.randolph@burrellcenter.com"],
+    "phones": ["417-893-7740", "988"],
+    "websites": ["https://www.burrellcenter.com"],
+    "taxonomies": [
+      {
+        "code": "rp-1500.1400-800",
+        "name": "Suicide Prevention Hotlines",
+        "taxonomy_system_name": "HSIS"
+      }
+    ],
+    "locations": [
+      {
+        "location_id": "1faf9837-2942-532f-8a2e-6dd6a545a159",
+        "name": "Burrell Behavioral Health - Adult Addiction Services - CSTAR",
+        "address_1": "155 Corporate Place",
+        "city": "Branson",
+        "state": "MO",
+        "postal_code": "65616",
+        "url": "https://www.burrellcenter.com"
+      }
+    ]
+  },
+  "entity_b": {
+    "entity_id": "b71c103f-32d8-5514-ac00-2a86c0a13acf",
+    "original_id": "34438",
+    "name": "Suicide Prevention Hotlines",
+    "organization_name": "BURRELL BEHAVIORAL HEALTH",
+    "description": "Provides a 24-hour suicide prevention hotline.",
+    "emails": ["rebecca.randolph@burrellcenter.com"],
+    "phones": ["417-761-5000", "988"],
+    "websites": ["https://www.burrellcenter.com"],
+    "taxonomies": [
+      {
+        "code": "rp-1500.1400-800",
+        "name": "Suicide Prevention Hotlines",
+        "taxonomy_system_name": "HSIS"
+      }
+    ],
+    "locations": [
+      {
+        "location_id": "b0344bf3-3d41-506b-90c8-7059b96cd2ac",
+        "name": "Burrell Behavioral Health - Marshfield Clinic",
+        "address_1": "1350 Spur Drive",
+        "city": "Marshfield",
+        "state": "MO",
+        "postal_code": "65706",
+        "url": "https://www.burrellcenter.com"
+      }
+    ]
+  }
+}
