@@ -190,6 +190,10 @@ attributes: {}
 
 ## Publishing
 
+> **PyPI README:** The file displayed on the PyPI package page is [`README.pypi.md`](README.pypi.md),
+> not this file. Edit that file when updating the consumer-facing documentation.
+> This `README.md` is the contributor/developer reference and is not included in the published package.
+
 This package is set up to publish to PyPI from GitHub Actions via Trusted Publishing.
 
 ### PyPI Trusted Publisher settings

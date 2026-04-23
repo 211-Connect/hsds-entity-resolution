@@ -7,7 +7,7 @@ on:
     paths:
       - pyproject.toml
       - src/**
-      - README.md
+      - README.pypi.md
       - .github/workflows/publish.yml
   workflow_dispatch:
 
