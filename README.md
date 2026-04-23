@@ -174,7 +174,7 @@ expectations.
 
 ## Using This In Another Dagster Repo
 
-1. Publish or install this package (for example: `pip install hsds_entity_resolution`).
+1. Publish or install this package (for example: `pip install hsds-record-matcher`).
 2. Confirm discovery in the target environment:
 
 ```bash
@@ -187,3 +187,32 @@ dg list components --package hsds_entity_resolution
 type: hsds_entity_resolution.dagster.components.EntityResolutionComponent
 attributes: {}
 ```
+
+## Publishing
+
+This package is set up to publish to PyPI from GitHub Actions via Trusted Publishing.
+
+### PyPI Trusted Publisher settings
+
+For the pending or normal PyPI publisher, use:
+
+- PyPI project name: `hsds-record-matcher`
+- Owner: `211-Connect`
+- Repository name: `hsds-entity-resolution`
+- Workflow name: `publish.yml`
+- Environment name: `pypi`
+
+The repository name field should be only the repository name, not `owner/repo`.
+
+The distribution name on PyPI is independent from the import path in Python:
+
+- Install name: `hsds-record-matcher`
+- Import path: `hsds_entity_resolution`
+
+### Release flow
+
+1. Update `version` in `pyproject.toml`.
+2. Merge or push that change to `main`.
+3. GitHub Actions will build the wheel and sdist, validate them with `twine check`, and publish to PyPI through the `pypi` environment if the version changed.
+
+You can also run the publish workflow manually with `workflow_dispatch`.
