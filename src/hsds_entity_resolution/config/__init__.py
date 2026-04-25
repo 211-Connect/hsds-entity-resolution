@@ -5,9 +5,13 @@ from hsds_entity_resolution.config.entity_resolution_run_config import (
     ClusteringConfig,
     EntityResolutionRunConfig,
     ExecutionConfig,
+    FeatureOverrideConfig,
     MetadataConfig,
     MitigationConfig,
+    PairRuleConfig,
     ScoringConfig,
+    SourcePolicyConfig,
+    SourceProfileConfig,
 )
 
 __all__ = [
@@ -15,7 +19,11 @@ __all__ = [
     "ClusteringConfig",
     "EntityResolutionRunConfig",
     "ExecutionConfig",
+    "FeatureOverrideConfig",
     "MetadataConfig",
     "MitigationConfig",
+    "PairRuleConfig",
     "ScoringConfig",
+    "SourcePolicyConfig",
+    "SourceProfileConfig",
 ]

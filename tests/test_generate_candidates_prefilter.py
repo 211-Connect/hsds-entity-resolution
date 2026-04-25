@@ -361,7 +361,7 @@ def test_generate_candidates_logs_blocking_overview_summary(
         {
             "entity_id": ["org-a", "org-b", "org-c", "org-d"],
             "entity_type": ["organization"] * 4,
-            "source_schema": ["IL211"] * 4,
+            "source_schema": ["SOURCE_A"] * 4,
             "name": ["A", "B", "C", "D"],
             "description": ["", "", "", ""],
             "emails": [
@@ -410,6 +410,182 @@ def test_generate_candidates_logs_blocking_overview_summary(
     assert "heuristic=max_candidates_may_be_low" in overview_message
 
 
+def test_generate_candidates_policy_admits_exact_address_without_taxonomy() -> None:
+    """Source policy can admit exact-address pairs without requiring taxonomy overlap."""
+    config = _source_policy_config(
+        relation="cross_source_same_profile",
+        rule_id="address-only-cross-source-shared-profile",
+    )
+    organization_entities = _address_overlap_frame(["SOURCE_A", "SOURCE_B"])
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.height == 1
+    row = result.candidate_pairs.row(0, named=True)
+    assert row["blocking_rule_id"] == "address-only-cross-source-shared-profile"
+    assert "shared_address" in row["candidate_reason_codes"]
+
+
+def test_generate_candidates_cross_source_same_profile_rejects_same_source_pair() -> None:
+    """The cross-source shared-profile relation must not admit same-source pairs."""
+    config = _source_policy_config(
+        relation="cross_source_same_profile",
+        rule_id="address-only-cross-source-shared-profile",
+    )
+    organization_entities = _address_overlap_frame(["SOURCE_A", "SOURCE_A"])
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.is_empty()
+
+
+def test_generate_candidates_same_profile_still_admits_same_and_cross_source_pairs() -> None:
+    """The older same-profile relation continues to include same-source pairs."""
+    config = _source_policy_config(relation="same_profile", rule_id="address-only-same-profile")
+    same_source = generate_candidates(
+        denormalized_organization=_address_overlap_frame(["SOURCE_A", "SOURCE_A"]),
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+    cross_source = generate_candidates(
+        denormalized_organization=_address_overlap_frame(["SOURCE_A", "SOURCE_B"]),
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert same_source.candidate_pairs.height == 1
+    assert cross_source.candidate_pairs.height == 1
+
+
+def test_generate_candidates_policy_min_similarity_can_lower_global_scan_floor() -> None:
+    """Admission rule min similarity is honored below the default blocking threshold."""
+    config = _source_policy_config(
+        relation="cross_source_same_profile",
+        rule_id="address-low-similarity",
+        min_embedding_similarity=0.70,
+    )
+    organization_entities = _address_overlap_frame(
+        ["SOURCE_A", "SOURCE_B"],
+        embedding_vectors=[[1.0, 0.0], [0.72, 0.693974]],
+    )
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.height == 1
+    assert result.candidate_pairs.row(0, named=True)["blocking_rule_id"] == "address-low-similarity"
+
+
+def test_generate_candidates_legacy_fallback_still_uses_global_similarity_threshold() -> None:
+    """Lower policy scan floors must not lower default taxonomy+non-taxonomy admission."""
+    config = _source_policy_config(
+        relation="cross_source_same_profile",
+        rule_id="unmatched-source-policy",
+        min_embedding_similarity=0.70,
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[{"code": "BD"}], [{"code": "BD"}]],
+        locations=[[{"city": "Chicago", "state": "IL"}], [{"city": "Chicago", "state": "IL"}]],
+    ).with_columns(
+        pl.Series("source_schema", ["SOURCE_X", "SOURCE_Y"]),
+        pl.Series("embedding_vector", [[1.0, 0.0], [0.72, 0.693974]]),
+    )
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.is_empty()
+
+
+def _source_policy_config(
+    *,
+    relation: str,
+    rule_id: str,
+    min_embedding_similarity: float | None = None,
+) -> EntityResolutionRunConfig:
+    """Build a generic source-policy config for candidate admission tests."""
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-source-policy",
+        scope_id="scope-source-policy",
+        entity_type="organization",
+    ).model_dump()
+    rule = {
+        "rule_id": rule_id,
+        "entity_types": ["organization"],
+        "source_relation": relation,
+        "source_profiles": ["PROFILE_SHARED"],
+        "all_of": ["address_exact"],
+    }
+    if min_embedding_similarity is not None:
+        rule["min_embedding_similarity"] = min_embedding_similarity
+    payload["source_policy"] = {
+        "source_profiles": {
+            "PROFILE_SHARED": {"source_schemas": ["SOURCE_A", "SOURCE_B"]},
+        },
+        "admission_rules": [rule],
+        "pair_rules": [],
+    }
+    return EntityResolutionRunConfig.model_validate(payload)
+
+
+def _address_overlap_frame(
+    source_schemas: list[str],
+    *,
+    embedding_vectors: list[list[float]] | None = None,
+) -> pl.DataFrame:
+    """Return two generic entities that share an exact normalized address."""
+    frame = _organization_frame(
+        taxonomies=[[], []],
+        locations=[
+            [
+                {
+                    "address_1": "123 N Main St",
+                    "city": "Chicago",
+                    "state": "IL",
+                    "postal_code": "60601",
+                }
+            ],
+            [
+                {
+                    "address_1": "123 North Main Street",
+                    "city": "Chicago",
+                    "state": "IL",
+                    "postal_code": "60601",
+                }
+            ],
+        ],
+    ).with_columns(pl.Series("source_schema", source_schemas))
+    if embedding_vectors is not None:
+        frame = frame.with_columns(pl.Series("embedding_vector", embedding_vectors))
+    return frame
+
+
 def _organization_frame(
     *,
     taxonomies: list[object],
@@ -428,7 +604,7 @@ def _organization_frame(
         {
             "entity_id": ["org-a", "org-b"],
             "entity_type": ["organization", "organization"],
-            "source_schema": ["IL211", "IL211"],
+            "source_schema": ["SOURCE_A", "SOURCE_A"],
             "name": ["North Clinic", "North Clinic LLC"],
             "description": ["Primary care", "Primary care services"],
             "emails": resolved_emails,

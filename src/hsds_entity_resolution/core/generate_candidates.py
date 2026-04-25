@@ -17,6 +17,11 @@ from hsds_entity_resolution.core.dataframe_utils import (
     frame_with_schema,
 )
 from hsds_entity_resolution.core.domain_utils import extract_contact_domains
+from hsds_entity_resolution.core.score_candidates import _canonical_address_values
+from hsds_entity_resolution.core.source_policy import (
+    PairPolicyContext,
+    decide_candidate_admission,
+)
 from hsds_entity_resolution.core.taxonomy_utils import (
     extract_entity_taxonomy_codes,
     taxonomy_codes_match_or_parent_child,
@@ -33,6 +38,7 @@ _OVERLAP_CHANNEL_REASON_CODES: dict[str, str] = {
     "website": "shared_domain",
     "taxonomy": "shared_taxonomy",
     "location": "shared_location",
+    "address_exact": "shared_address",
 }
 
 
@@ -67,6 +73,8 @@ class BlockingDiagnosticsState:
     taxonomy_failed: int = 0
     non_taxonomy_failed: int = 0
     both_failed: int = 0
+    admitted_rule_hits: dict[str, int] = field(default_factory=dict)
+    no_admission_rule: int = 0
     first_anchor_id: str | None = None
     first_anchor_schema: str | None = None
     first_anchor_samples: list[dict[str, Any]] = field(default_factory=list)
@@ -206,9 +214,10 @@ def _collect_candidate_records(
 ) -> tuple[list[dict[str, Any]], BlockingOverview]:
     """Collect canonical candidate pairs and deduplicate by pair key."""
     pairs_by_key: dict[str, dict[str, Any]] = {}
-    threshold = config.blocking.similarity_threshold
+    default_threshold = config.blocking.similarity_threshold
+    threshold = _effective_similarity_floor(config=config, entity_type=entity_type)
     max_per_entity = config.blocking.max_candidates_per_entity
-    overlap_channels = config.blocking.overlap_prefilter_channels
+    overlap_channels = _effective_overlap_channels(config=config)
     sorted_changed_ids = sorted(changed_ids)
     stage_name = f"generate_candidates.{entity_type}.anchors"
     diagnostics = BlockingDiagnosticsState(channel_hits={ch: 0 for ch in overlap_channels})
@@ -249,8 +258,10 @@ def _collect_candidate_records(
             similarities=similarities,
             top_indices=top_indices,
             threshold=threshold,
+            default_threshold=default_threshold,
             max_per_entity=max_per_entity,
             overlap_channels=overlap_channels,
+            config=config,
             pairs_by_key=pairs_by_key,
             diagnostics=diagnostics,
             capture_this_anchor=capture_this_anchor,
@@ -328,6 +339,28 @@ def _empty_blocking_overview(*, entity_type: str) -> BlockingOverview:
     )
 
 
+def _effective_overlap_channels(*, config: EntityResolutionRunConfig) -> list[str]:
+    """Return overlap channels needed by defaults and source-policy admission rules."""
+    channels = set(config.blocking.overlap_prefilter_channels)
+    for rule in config.source_policy.admission_rules:
+        channels.update(rule.all_of)
+        channels.update(rule.any_of)
+        channels.update(rule.none_of)
+    return sorted(channels)
+
+
+def _effective_similarity_floor(*, config: EntityResolutionRunConfig, entity_type: str) -> float:
+    """Return the lowest similarity worth scanning for default or policy admission."""
+    floors = [
+        rule.min_embedding_similarity
+        for rule in config.source_policy.admission_rules
+        if rule.min_embedding_similarity is not None and entity_type in rule.entity_types
+    ]
+    if not floors:
+        return config.blocking.similarity_threshold
+    return min(config.blocking.similarity_threshold, *floors)
+
+
 def _start_first_anchor_capture(
     *,
     diagnostics: BlockingDiagnosticsState,
@@ -351,8 +384,10 @@ def _collect_anchor_candidates(
     similarities: np.ndarray,
     top_indices: list[int],
     threshold: float,
+    default_threshold: float,
     max_per_entity: int,
     overlap_channels: list[str],
+    config: EntityResolutionRunConfig,
     pairs_by_key: dict[str, dict[str, Any]],
     diagnostics: BlockingDiagnosticsState,
     capture_this_anchor: bool,
@@ -373,10 +408,16 @@ def _collect_anchor_candidates(
         saw_above_threshold = True
         diagnostics.above_threshold += 1
         candidate = entity_rows[candidate_idx]
-        taxonomy_reasons, non_taxonomy_reasons = _collect_blocking_reasons(
+        channel_hits = _collect_blocking_channel_hits(
             anchor=anchor,
             candidate=candidate,
             overlap_channels=overlap_channels,
+        )
+        taxonomy_reasons = ["shared_taxonomy"] if "taxonomy" in channel_hits else []
+        non_taxonomy_reasons = sorted(
+            _OVERLAP_CHANNEL_REASON_CODES[channel]
+            for channel in channel_hits
+            if channel != "taxonomy"
         )
         overlap_reasons = [*taxonomy_reasons, *non_taxonomy_reasons]
         _record_overlap_channel_hits(
@@ -394,8 +435,22 @@ def _collect_anchor_candidates(
         )
         taxonomy_pass = bool(taxonomy_reasons)
         non_taxonomy_pass = bool(non_taxonomy_reasons)
-        if not taxonomy_pass or not non_taxonomy_pass:
+        decision = decide_candidate_admission(
+            config=config,
+            context=PairPolicyContext(
+                entity_type=str(anchor["entity_type"]),
+                source_schema_a=str(anchor.get("source_schema") or ""),
+                source_schema_b=str(candidate.get("source_schema") or ""),
+            ),
+            similarity=similarity,
+            channel_hits=channel_hits,
+            taxonomy_pass=taxonomy_pass,
+            non_taxonomy_pass=non_taxonomy_pass,
+            default_admission_allowed=similarity >= default_threshold,
+        )
+        if not decision.admitted:
             diagnostics.overlap_blocked += 1
+            diagnostics.no_admission_rule += 1
             if not taxonomy_pass and not non_taxonomy_pass:
                 diagnostics.both_failed += 1
             elif not taxonomy_pass:
@@ -403,11 +458,16 @@ def _collect_anchor_candidates(
             else:
                 diagnostics.non_taxonomy_failed += 1
             continue
+        blocking_rule_id = decision.rule_id or "unknown"
+        diagnostics.admitted_rule_hits[blocking_rule_id] = (
+            diagnostics.admitted_rule_hits.get(blocking_rule_id, 0) + 1
+        )
         record = _to_candidate_record(
             anchor=anchor,
             candidate=candidate,
             similarity=similarity,
             overlap_reasons=overlap_reasons,
+            blocking_rule_id=blocking_rule_id,
         )
         pairs_by_key[record["pair_key"]] = record
         selected += 1
@@ -742,27 +802,22 @@ def _percent(numerator: int, denominator: int) -> float:
     return round((numerator / denominator) * 100.0, 1)
 
 
-def _collect_blocking_reasons(
+def _collect_blocking_channel_hits(
     *,
     anchor: dict[str, Any],
     candidate: dict[str, Any],
     overlap_channels: list[str],
-) -> tuple[list[str], list[str]]:
-    """Return taxonomy and non-taxonomy reasons used by the blocking gate."""
-    taxonomy_reasons: list[str] = []
-    non_taxonomy_reasons: list[str] = []
+) -> set[str]:
+    """Return overlap channel names that matched for the pair."""
+    channel_hits: set[str] = set()
     evaluators = _overlap_channel_evaluators()
     for channel in overlap_channels:
         evaluator = evaluators.get(channel)
         if evaluator is None:
             continue
         if evaluator(anchor, candidate):
-            reason_code = _OVERLAP_CHANNEL_REASON_CODES[channel]
-            if channel == "taxonomy":
-                taxonomy_reasons.append(reason_code)
-            else:
-                non_taxonomy_reasons.append(reason_code)
-    return sorted(set(taxonomy_reasons)), sorted(set(non_taxonomy_reasons))
+            channel_hits.add(channel)
+    return channel_hits
 
 
 def _to_candidate_record(
@@ -771,6 +826,7 @@ def _to_candidate_record(
     candidate: dict[str, Any],
     similarity: float,
     overlap_reasons: list[str],
+    blocking_rule_id: str,
 ) -> dict[str, Any]:
     """Build one canonical candidate record with provenance fields."""
     entity_a_id, entity_b_id = _canonical_pair(anchor["entity_id"], candidate["entity_id"])
@@ -795,6 +851,7 @@ def _to_candidate_record(
         "candidate_reason_codes": reason_codes,
         "source_schema_a": source_schema_a,
         "source_schema_b": source_schema_b,
+        "blocking_rule_id": blocking_rule_id,
     }
 
 
@@ -810,6 +867,7 @@ def _overlap_channel_evaluators() -> dict[str, OverlapEvaluator]:
         "website": _has_domain_overlap,
         "taxonomy": _has_taxonomy_overlap,
         "location": _has_location_overlap,
+        "address_exact": _has_exact_address_overlap,
     }
 
 
@@ -851,6 +909,13 @@ def _has_location_overlap(anchor: dict[str, Any], candidate: dict[str, Any]) -> 
     anchor_locations = _extract_location_keys(entity=anchor)
     candidate_locations = _extract_location_keys(entity=candidate)
     return bool(anchor_locations.intersection(candidate_locations))
+
+
+def _has_exact_address_overlap(anchor: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    """Return true when canonical full-address tokens overlap."""
+    anchor_addresses = set(_canonical_address_values(anchor.get("locations")))
+    candidate_addresses = set(_canonical_address_values(candidate.get("locations")))
+    return bool(anchor_addresses.intersection(candidate_addresses))
 
 
 def _extract_location_keys(*, entity: dict[str, Any]) -> set[tuple[str, str]]:

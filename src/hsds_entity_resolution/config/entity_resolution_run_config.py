@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from hsds_entity_resolution.types.domain import EntityType
@@ -12,6 +14,18 @@ _SUPPORTED_BLOCKING_OVERLAP_CHANNELS = {
     "website",
     "taxonomy",
     "location",
+    "address_exact",
+}
+
+_SUPPORTED_SIGNAL_NAMES = {
+    "shared_email",
+    "shared_phone",
+    "shared_domain",
+    "shared_taxonomy",
+    "shared_address",
+    "shared_identifier",
+    "name_similarity",
+    "ml_score",
 }
 
 
@@ -54,6 +68,39 @@ class BlockingConfig(BaseStrictModel):
         return unique_values
 
 
+class AdmissionRuleConfig(BaseStrictModel):
+    """Generic candidate-admission rule evaluated after embedding threshold."""
+
+    rule_id: str
+    entity_types: list[EntityType] = Field(default_factory=lambda: ["organization", "service"])
+    source_relation: Literal[
+        "any",
+        "same_source",
+        "cross_source",
+        "same_profile",
+        "cross_source_same_profile",
+        "cross_profile",
+    ] = "any"
+    source_profiles: list[str] = Field(default_factory=list)
+    min_embedding_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    all_of: list[str] = Field(default_factory=list)
+    any_of: list[str] = Field(default_factory=list)
+    none_of: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_admission_rule(self) -> AdmissionRuleConfig:
+        """Validate supported channel names and source-profile references."""
+        referenced = [*self.all_of, *self.any_of, *self.none_of]
+        unsupported = sorted(set(referenced).difference(_SUPPORTED_BLOCKING_OVERLAP_CHANNELS))
+        if unsupported:
+            message = f"Unsupported admission rule channels: {unsupported!r}"
+            raise ValueError(message)
+        if not self.all_of and not self.any_of:
+            message = "Admission rule must define at least one all_of or any_of channel"
+            raise ValueError(message)
+        return self
+
+
 class DeterministicSignalConfig(BaseStrictModel):
     """Configuration for one deterministic overlap signal."""
 
@@ -79,6 +126,129 @@ class NlpConfig(BaseStrictModel):
     fuzzy_threshold: float = Field(default=0.88, ge=0.6, le=0.98)
     number_mismatch_veto_enabled: bool = True
     standalone_fuzzy_threshold: float = Field(default=0.94, ge=0.7, le=0.99)
+
+
+class SignalSuppressionConfig(BaseStrictModel):
+    """Suppress one signal when all configured trigger signals contributed."""
+
+    signal: str
+    when_all_present: list[str]
+
+    @model_validator(mode="after")
+    def validate_signal_names(self) -> SignalSuppressionConfig:
+        """Validate signal identifiers used by suppression rules."""
+        names = [self.signal, *self.when_all_present]
+        unsupported = sorted(set(names).difference(_SUPPORTED_SIGNAL_NAMES))
+        if unsupported:
+            message = f"Unsupported signal suppression names: {unsupported!r}"
+            raise ValueError(message)
+        if not self.when_all_present:
+            message = "Signal suppression requires at least one trigger signal"
+            raise ValueError(message)
+        return self
+
+
+class FeatureOverrideConfig(BaseStrictModel):
+    """Pair-rule scoring overrides applied on top of entity-type defaults."""
+
+    deterministic: dict[str, DeterministicSignalConfig] = Field(default_factory=dict)
+    nlp_enabled: bool | None = None
+    deterministic_section_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+    nlp_section_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+    ml_section_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+    duplicate_threshold: float | None = Field(default=None, ge=0.5, le=0.99)
+    maybe_threshold: float | None = Field(default=None, ge=0.3, le=0.95)
+    ml_gate_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    suppressions: list[SignalSuppressionConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_feature_overrides(self) -> FeatureOverrideConfig:
+        """Validate override keys and threshold ordering when both are present."""
+        unsupported = sorted(set(self.deterministic).difference(_SUPPORTED_SIGNAL_NAMES))
+        if unsupported:
+            message = f"Unsupported deterministic override names: {unsupported!r}"
+            raise ValueError(message)
+        non_deterministic = sorted(
+            set(self.deterministic).intersection({"name_similarity", "ml_score"})
+        )
+        if non_deterministic:
+            message = (
+                "Non-deterministic signals cannot use deterministic overrides: "
+                f"{non_deterministic!r}"
+            )
+            raise ValueError(message)
+        if (
+            self.duplicate_threshold is not None
+            and self.maybe_threshold is not None
+            and self.duplicate_threshold <= self.maybe_threshold
+        ):
+            message = "duplicate_threshold must be strictly greater than maybe_threshold"
+            raise ValueError(message)
+        section_values = [
+            self.deterministic_section_weight,
+            self.nlp_section_weight,
+            self.ml_section_weight,
+        ]
+        if any(value is not None for value in section_values):
+            if not all(value is not None for value in section_values):
+                message = "Section weight overrides must set all three section weights together"
+                raise ValueError(message)
+            total = sum(float(value) for value in section_values if value is not None)
+            if abs(total - 1.0) > 0.001:
+                message = "Section weights must sum to 1.0 +/- 0.001"
+                raise ValueError(message)
+        return self
+
+
+class PairRuleConfig(BaseStrictModel):
+    """Generic pair policy selected from source relation/profile metadata."""
+
+    rule_id: str
+    entity_types: list[EntityType] = Field(default_factory=lambda: ["organization", "service"])
+    source_relation: Literal[
+        "any",
+        "same_source",
+        "cross_source",
+        "same_profile",
+        "cross_source_same_profile",
+        "cross_profile",
+    ] = "any"
+    source_profiles: list[str] = Field(default_factory=list)
+    feature_overrides: FeatureOverrideConfig = Field(default_factory=FeatureOverrideConfig)
+
+
+class SourceProfileConfig(BaseStrictModel):
+    """Host-assigned abstract source profile membership."""
+
+    source_schemas: list[str] = Field(default_factory=list)
+
+    @field_validator("source_schemas")
+    @classmethod
+    def normalize_source_schemas(cls, values: list[str]) -> list[str]:
+        """Normalize source-schema names for case-insensitive matching."""
+        normalized = [value.strip().upper() for value in values if value.strip()]
+        return list(dict.fromkeys(normalized))
+
+
+class SourcePolicyConfig(BaseStrictModel):
+    """Generic source-aware policy extension supplied by host applications."""
+
+    source_profiles: dict[str, SourceProfileConfig] = Field(default_factory=dict)
+    admission_rules: list[AdmissionRuleConfig] = Field(default_factory=list)
+    pair_rules: list[PairRuleConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_source_policy(self) -> SourcePolicyConfig:
+        """Validate rule references against configured source profiles."""
+        profile_ids = set(self.source_profiles)
+        referenced: set[str] = set()
+        for rule in [*self.admission_rules, *self.pair_rules]:
+            referenced.update(rule.source_profiles)
+        unknown = sorted(referenced.difference(profile_ids))
+        if unknown:
+            message = f"Unknown source profile references: {unknown!r}"
+            raise ValueError(message)
+        return self
 
 
 class MlConfig(BaseStrictModel):
@@ -169,6 +339,7 @@ class EntityResolutionRunConfig(BaseStrictModel):
     clustering: ClusteringConfig
     execution: ExecutionConfig
     metadata: MetadataConfig
+    source_policy: SourcePolicyConfig = Field(default_factory=SourcePolicyConfig)
 
     @classmethod
     def defaults_for_entity_type(

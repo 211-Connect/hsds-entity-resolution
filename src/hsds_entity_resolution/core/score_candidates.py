@@ -24,6 +24,13 @@ from hsds_entity_resolution.core.pair_tiering import (
     classify_pair_outcome,
     is_review_eligible_outcome,
 )
+from hsds_entity_resolution.core.source_policy import (
+    EffectiveScoringPolicy,
+    PairPolicyContext,
+    deterministic_signal_config,
+    effective_scoring_values,
+    resolve_scoring_policy,
+)
 from hsds_entity_resolution.core.taxonomy_utils import (
     extract_entity_taxonomy_codes,
     taxonomy_hierarchy_levels,
@@ -56,6 +63,7 @@ class PreMlPairRecord:
     pre_ml_score: float
     det_reasons: list[dict[str, Any]]
     nlp_reasons: list[dict[str, Any]]
+    policy: EffectiveScoringPolicy | None = None
 
 
 def score_candidates(
@@ -189,19 +197,49 @@ def _pre_score_pair(
     entity_type = candidate["entity_type"]
     left = entity_lookup[(entity_type, candidate["entity_a_id"])]
     right = entity_lookup[(entity_type, candidate["entity_b_id"])]
+    context = PairPolicyContext(
+        entity_type=str(entity_type),
+        source_schema_a=str(candidate.get("source_schema_a") or left.get("source_schema") or ""),
+        source_schema_b=str(candidate.get("source_schema_b") or right.get("source_schema") or ""),
+    )
+    policy = resolve_scoring_policy(config=config, context=context)
     det_score, det_reasons = _deterministic_score(
         left=left,
         right=right,
         entity_type=entity_type,
         config=config,
+        policy=policy,
     )
     nlp_score, nlp_reasons = _nlp_score(
         left=left,
         right=right,
         config=config,
         deterministic_score=det_score,
+        policy=policy,
     )
-    pre_ml_score = _compose_pre_ml_score(det_score=det_score, nlp_score=nlp_score, config=config)
+    contributed_signals = {str(reason["match_type"]) for reason in [*det_reasons, *nlp_reasons]}
+    policy = resolve_scoring_policy(
+        config=config,
+        context=context,
+        contributed_signals=contributed_signals,
+    )
+    if policy.suppressed_signals:
+        det_score, det_reasons = _deterministic_score(
+            left=left,
+            right=right,
+            entity_type=entity_type,
+            config=config,
+            policy=policy,
+        )
+        if "name_similarity" in policy.suppressed_signals:
+            nlp_score = 0.0
+            nlp_reasons = []
+    pre_ml_score = _compose_pre_ml_score(
+        det_score=det_score,
+        nlp_score=nlp_score,
+        config=config,
+        policy=policy,
+    )
     return PreMlPairRecord(
         candidate=candidate,
         det_score=det_score,
@@ -209,6 +247,7 @@ def _pre_score_pair(
         pre_ml_score=pre_ml_score,
         det_reasons=det_reasons,
         nlp_reasons=nlp_reasons,
+        policy=policy,
     )
 
 
@@ -224,7 +263,12 @@ def _score_ml_subset(
         return {}
     grouped: dict[str, list[dict[str, Any]]] = {}
     for record in pre_ml_records:
-        if record.pre_ml_score < config.scoring.ml.ml_gate_threshold:
+        policy = _policy_for_record(record=record, config=config)
+        scoring_values = effective_scoring_values(
+            scoring=config.scoring,
+            overrides=policy.feature_overrides,
+        )
+        if record.pre_ml_score < scoring_values["ml_gate_threshold"]:
             continue
         candidate = record.candidate
         entity_type = candidate["entity_type"]
@@ -266,6 +310,25 @@ def _extract_signal_overrides(*, record: PreMlPairRecord) -> dict[str, float]:
     )
 
 
+def _policy_for_record(
+    *,
+    record: PreMlPairRecord,
+    config: EntityResolutionRunConfig,
+) -> EffectiveScoringPolicy:
+    """Return explicit record policy or the default fallback for compatibility tests."""
+    if record.policy is not None:
+        return record.policy
+    candidate = record.candidate
+    return resolve_scoring_policy(
+        config=config,
+        context=PairPolicyContext(
+            entity_type=str(candidate["entity_type"]),
+            source_schema_a=str(candidate.get("source_schema_a") or ""),
+            source_schema_b=str(candidate.get("source_schema_b") or ""),
+        ),
+    )
+
+
 def _finalize_pair(
     *,
     record: PreMlPairRecord,
@@ -275,17 +338,20 @@ def _finalize_pair(
     """Finalize candidate score and build explainability reasons."""
     candidate = record.candidate
     entity_type = candidate["entity_type"]
+    policy = _policy_for_record(record=record, config=config)
     ml_score = _ml_score(
         candidate=candidate,
         pre_ml_score=record.pre_ml_score,
         config=config,
         model_scores=model_scores,
+        policy=policy,
     )
     final_score = _final_score(
         det_score=record.det_score,
         nlp_score=record.nlp_score,
         ml_score=ml_score,
         config=config,
+        policy=policy,
     )
     legacy_confidence_score = final_score
     shadow_log_odds = _shadow_log_odds(
@@ -293,6 +359,7 @@ def _finalize_pair(
         nlp_score=record.nlp_score,
         ml_score=ml_score,
         config=config,
+        policy=policy,
     )
     shadow_confidence_score = _shadow_confidence(
         shadow_log_odds=shadow_log_odds,
@@ -301,14 +368,14 @@ def _finalize_pair(
     )
     pair_outcome = classify_pair_outcome(
         final_score=final_score,
-        duplicate_threshold=config.scoring.duplicate_threshold,
-        maybe_threshold=config.scoring.maybe_threshold,
+        duplicate_threshold=policy.duplicate_threshold,
+        maybe_threshold=policy.maybe_threshold,
     )
     predicted_duplicate = pair_outcome == "duplicate"
     review_eligible = is_review_eligible_outcome(pair_outcome)
     reasons = [*record.det_reasons, *record.nlp_reasons]
     if ml_score is not None:
-        ml_reason = _ml_reason(ml_score=ml_score, config=config)
+        ml_reason = _ml_reason(ml_score=ml_score, config=config, policy=policy)
         if ml_reason is not None:
             reasons.append(ml_reason)
     reasons = [{**reason, "pair_key": candidate["pair_key"]} for reason in reasons]
@@ -333,6 +400,11 @@ def _finalize_pair(
         "pair_outcome": pair_outcome,
         "review_eligible": review_eligible,
         "embedding_similarity": float(candidate["embedding_similarity"]),
+        "policy_rule_id": policy.rule_id,
+        "blocking_rule_id": str(candidate.get("blocking_rule_id") or "unknown"),
+        "effective_duplicate_threshold": policy.duplicate_threshold,
+        "effective_maybe_threshold": policy.maybe_threshold,
+        "suppressed_signals": policy.suppressed_signals,
     }
     return ScoredPairRecord(row=row, reasons=reasons)
 
@@ -343,6 +415,7 @@ def _deterministic_score(
     right: dict[str, Any],
     entity_type: str,
     config: EntityResolutionRunConfig,
+    policy: EffectiveScoringPolicy,
 ) -> tuple[float, list[dict[str, Any]]]:
     """Compute deterministic overlap score using legacy-compatible normalization."""
     domain_raw = domain_overlap_score(
@@ -360,39 +433,65 @@ def _deterministic_score(
         "shared_email": (
             left.get("emails"),
             right.get("emails"),
-            config.scoring.deterministic.shared_email,
+            deterministic_signal_config(
+                config=config,
+                signal_name="shared_email",
+                overrides=policy.feature_overrides,
+            ),
         ),
         "shared_phone": (
             left.get("phones"),
             right.get("phones"),
-            config.scoring.deterministic.shared_phone,
+            deterministic_signal_config(
+                config=config,
+                signal_name="shared_phone",
+                overrides=policy.feature_overrides,
+            ),
         ),
         "shared_domain": (
             [],
             [],
-            config.scoring.deterministic.shared_domain,
+            deterministic_signal_config(
+                config=config,
+                signal_name="shared_domain",
+                overrides=policy.feature_overrides,
+            ),
         ),
         "shared_taxonomy": (
             taxonomy_overlap["left_values"],
             taxonomy_overlap["right_values"],
-            config.scoring.deterministic.shared_taxonomy,
+            deterministic_signal_config(
+                config=config,
+                signal_name="shared_taxonomy",
+                overrides=policy.feature_overrides,
+            ),
         ),
         "shared_address": (
             shared_address_left,
             shared_address_right,
-            config.scoring.deterministic.shared_address,
+            deterministic_signal_config(
+                config=config,
+                signal_name="shared_address",
+                overrides=policy.feature_overrides,
+            ),
         ),
     }
     if entity_type == "organization":
         channels["shared_identifier"] = (
             shared_identifier_left,
             shared_identifier_right,
-            config.scoring.deterministic.shared_identifier,
+            deterministic_signal_config(
+                config=config,
+                signal_name="shared_identifier",
+                overrides=policy.feature_overrides,
+            ),
         )
     contributions: list[dict[str, Any]] = []
     weighted_total = 0.0
     enabled_weight_total = 0.0
     for match_type, (left_values, right_values, signal) in channels.items():
+        if match_type in policy.suppressed_signals:
+            continue
         overlap = _overlap_details(left_values=left_values, right_values=right_values)
         is_domain_reason = match_type == _DOMAIN_REASON_MATCH_TYPE
         is_taxonomy_reason = match_type == _TAXONOMY_REASON_MATCH_TYPE
@@ -682,8 +781,14 @@ def _nlp_score(
     right: dict[str, Any],
     config: EntityResolutionRunConfig,
     deterministic_score: float,
+    policy: EffectiveScoringPolicy,
 ) -> tuple[float, list[dict[str, Any]]]:
     """Compute name similarity with safeguards and penalty controls."""
+    if (
+        policy.feature_overrides.nlp_enabled is False
+        or "name_similarity" in policy.suppressed_signals
+    ):
+        return 0.0, []
     weighted, similarity = compute_nlp_score(
         left=left,
         right=right,
@@ -711,13 +816,21 @@ def _nlp_score(
 
 
 def _compose_pre_ml_score(
-    *, det_score: float, nlp_score: float, config: EntityResolutionRunConfig
+    *,
+    det_score: float,
+    nlp_score: float,
+    config: EntityResolutionRunConfig,
+    policy: EffectiveScoringPolicy,
 ) -> float:
     """Compose deterministic and NLP sections on a normalized active-weight scale."""
+    scoring_values = effective_scoring_values(
+        scoring=config.scoring,
+        overrides=policy.feature_overrides,
+    )
     return _compose_weighted_score(
         components=[
-            (det_score, config.scoring.deterministic_section_weight),
-            (nlp_score, config.scoring.nlp_section_weight),
+            (det_score, scoring_values["deterministic_section_weight"]),
+            (nlp_score, scoring_values["nlp_section_weight"]),
         ]
     )
 
@@ -728,11 +841,16 @@ def _ml_score(
     pre_ml_score: float,
     config: EntityResolutionRunConfig,
     model_scores: dict[str, float],
+    policy: EffectiveScoringPolicy,
 ) -> float | None:
     """Resolve optional ML score from model output, with embedding fallback."""
     if not config.scoring.ml.ml_enabled:
         return None
-    if pre_ml_score < config.scoring.ml.ml_gate_threshold:
+    scoring_values = effective_scoring_values(
+        scoring=config.scoring,
+        overrides=policy.feature_overrides,
+    )
+    if pre_ml_score < scoring_values["ml_gate_threshold"]:
         return None
     model_score = model_scores.get(candidate["pair_key"])
     if model_score is not None:
@@ -746,14 +864,19 @@ def _final_score(
     nlp_score: float,
     ml_score: float | None,
     config: EntityResolutionRunConfig,
+    policy: EffectiveScoringPolicy,
 ) -> float:
     """Compute final ensemble score for prediction thresholding."""
+    scoring_values = effective_scoring_values(
+        scoring=config.scoring,
+        overrides=policy.feature_overrides,
+    )
     components: list[tuple[float | None, float]] = [
-        (det_score, config.scoring.deterministic_section_weight),
-        (nlp_score, config.scoring.nlp_section_weight),
+        (det_score, scoring_values["deterministic_section_weight"]),
+        (nlp_score, scoring_values["nlp_section_weight"]),
     ]
     if ml_score is not None:
-        components.append((ml_score, config.scoring.ml_section_weight))
+        components.append((ml_score, scoring_values["ml_section_weight"]))
     return _compose_weighted_score(components=components)
 
 
@@ -763,12 +886,17 @@ def _shadow_log_odds(
     nlp_score: float,
     ml_score: float | None,
     config: EntityResolutionRunConfig,
+    policy: EffectiveScoringPolicy,
 ) -> float:
     """Compute shadow calibration log-odds from unsaturated additive evidence."""
+    scoring_values = effective_scoring_values(
+        scoring=config.scoring,
+        overrides=policy.feature_overrides,
+    )
     deterministic_evidence = sum(float(reason["weighted_contribution"]) for reason in det_reasons)
-    nlp_evidence = config.scoring.nlp_section_weight * float(nlp_score)
+    nlp_evidence = scoring_values["nlp_section_weight"] * float(nlp_score)
     ml_evidence = (
-        config.scoring.ml_section_weight * float(ml_score) if ml_score is not None else 0.0
+        scoring_values["ml_section_weight"] * float(ml_score) if ml_score is not None else 0.0
     )
     return (
         config.scoring.calibration.prior_log_odds
@@ -832,16 +960,22 @@ def _ml_reason(
     *,
     ml_score: float,
     config: EntityResolutionRunConfig,
+    policy: EffectiveScoringPolicy,
 ) -> dict[str, Any] | None:
     """Create reason row for ML contribution."""
-    weighted = ml_score * config.scoring.ml_section_weight
+    scoring_values = effective_scoring_values(
+        scoring=config.scoring,
+        overrides=policy.feature_overrides,
+    )
+    signal_weight = scoring_values["ml_section_weight"]
+    weighted = ml_score * signal_weight
     if not is_contributing_evidence(raw_contribution=ml_score, weighted_contribution=weighted):
         return None
     return _reason_row(
         match_type="ml_similarity",
         raw=ml_score,
         weighted=weighted,
-        signal_weight=config.scoring.ml_section_weight,
+        signal_weight=signal_weight,
         similarity_score=ml_score,
     )
 

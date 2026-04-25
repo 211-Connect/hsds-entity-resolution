@@ -905,6 +905,136 @@ def test_shadow_confidence_can_be_disabled_to_match_legacy_score() -> None:
     assert row["shadow_confidence_score"] == pytest.approx(row["legacy_confidence_score"])
 
 
+def test_score_candidates_source_policy_can_disable_name_similarity() -> None:
+    """Pair rules can remove NLP/name contribution for matching source-profile pairs."""
+    payload = _config_with_ml_disabled().model_dump()
+    payload["source_policy"] = {
+        "source_profiles": {"PROFILE_SHARED": {"source_schemas": ["SOURCE_A"]}},
+        "admission_rules": [],
+        "pair_rules": [
+            {
+                "rule_id": "disable-name",
+                "entity_types": ["organization"],
+                "source_relation": "same_profile",
+                "source_profiles": ["PROFILE_SHARED"],
+                "feature_overrides": {"nlp_enabled": False},
+            }
+        ],
+    }
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_candidate_pairs(),
+        denormalized_organization=_normalized_org_rows(
+            left_name="Exact Shared Name",
+            right_name="Exact Shared Name",
+            include_overlap=False,
+        ),
+        denormalized_service=pl.DataFrame(),
+        config=config,
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    assert row["policy_rule_id"] == "disable-name"
+    assert row["nlp_section_score"] == 0.0
+    assert "name_similarity" not in result.pair_reasons.get_column("match_type").to_list()
+
+
+def test_score_candidates_source_policy_suppresses_name_when_taxonomy_contributes() -> None:
+    """Correlation rules can suppress name evidence when another signal contributed."""
+    payload = _config_with_ml_disabled().model_dump()
+    payload["source_policy"] = {
+        "source_profiles": {"PROFILE_SHARED": {"source_schemas": ["SOURCE_A"]}},
+        "admission_rules": [],
+        "pair_rules": [
+            {
+                "rule_id": "taxonomy-name-redundant",
+                "entity_types": ["organization"],
+                "source_relation": "same_profile",
+                "source_profiles": ["PROFILE_SHARED"],
+                "feature_overrides": {
+                    "suppressions": [
+                        {"signal": "name_similarity", "when_all_present": ["shared_taxonomy"]}
+                    ]
+                },
+            }
+        ],
+    }
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_candidate_pairs(),
+        denormalized_organization=_normalized_org_rows(
+            left_name="Exact Shared Name",
+            right_name="Exact Shared Name",
+            include_overlap=True,
+        ),
+        denormalized_service=pl.DataFrame(),
+        config=config,
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    match_types = result.pair_reasons.get_column("match_type").to_list()
+    assert row["policy_rule_id"] == "taxonomy-name-redundant"
+    assert row["suppressed_signals"] == ["name_similarity"]
+    assert row["nlp_section_score"] == 0.0
+    assert "shared_taxonomy" in match_types
+    assert "name_similarity" not in match_types
+
+
+def test_score_candidates_source_policy_overrides_weights_and_thresholds() -> None:
+    """Pair rules can apply effective scoring weights and duplicate thresholds."""
+    payload = _config_with_ml_disabled().model_dump()
+    payload["scoring"]["deterministic_section_weight"] = 1.0
+    payload["scoring"]["nlp_section_weight"] = 0.0
+    payload["scoring"]["ml_section_weight"] = 0.0
+    payload["scoring"]["duplicate_threshold"] = 0.95
+    payload["scoring"]["maybe_threshold"] = 0.50
+    payload["source_policy"] = {
+        "source_profiles": {"PROFILE_SHARED": {"source_schemas": ["SOURCE_A"]}},
+        "admission_rules": [],
+        "pair_rules": [
+            {
+                "rule_id": "email-only-promoted",
+                "entity_types": ["organization"],
+                "source_relation": "same_profile",
+                "source_profiles": ["PROFILE_SHARED"],
+                "feature_overrides": {
+                    "deterministic": {
+                        "shared_email": {"enabled": True, "weight": 0.6},
+                        "shared_phone": {"enabled": False, "weight": 0.0},
+                        "shared_domain": {"enabled": False, "weight": 0.0},
+                        "shared_taxonomy": {"enabled": False, "weight": 0.0},
+                        "shared_address": {"enabled": False, "weight": 0.0},
+                        "shared_identifier": {"enabled": False, "weight": 0.0},
+                    },
+                    "duplicate_threshold": 0.80,
+                    "maybe_threshold": 0.40,
+                },
+            }
+        ],
+    }
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_candidate_pairs(),
+        denormalized_organization=_normalized_org_rows(
+            include_overlap=False,
+            left_emails=["hello@example.org"],
+            right_emails=["hello@example.org"],
+        ),
+        denormalized_service=pl.DataFrame(),
+        config=config,
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    assert row["policy_rule_id"] == "email-only-promoted"
+    assert row["effective_duplicate_threshold"] == 0.80
+    assert row["effective_maybe_threshold"] == 0.40
+    assert row["deterministic_section_score"] == pytest.approx(1.0)
+    assert row["pair_outcome"] == "duplicate"
+
+
 def _config_with_nlp_overrides(**nlp_overrides: float | str) -> EntityResolutionRunConfig:
     """Return default run config with NLP-specific override values."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
@@ -971,8 +1101,8 @@ def _candidate_pairs() -> pl.DataFrame:
             "entity_type": ["organization"],
             "embedding_similarity": [0.95],
             "candidate_reason_codes": [["embedding_threshold", "shared_email"]],
-            "source_schema_a": ["IL211"],
-            "source_schema_b": ["IL211"],
+            "source_schema_a": ["SOURCE_A"],
+            "source_schema_b": ["SOURCE_A"],
         }
     )
 
@@ -1064,7 +1194,7 @@ def _normalized_org_rows(
             "organization_name": ["", ""],
             "organization_id": ["", ""],
             "embedding_vector": [[0.9, 0.1], [0.92, 0.08]],
-            "source_schema": ["IL211", "IL211"],
+            "source_schema": ["SOURCE_A", "SOURCE_A"],
         }
     )
 

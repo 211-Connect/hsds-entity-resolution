@@ -73,6 +73,7 @@ CANDIDATE_PAIR_SCHEMA: dict[str, Any] = {
     "candidate_reason_codes": pl.List(pl.String),
     "source_schema_a": pl.String,
     "source_schema_b": pl.String,
+    "blocking_rule_id": pl.String,
 }
 
 # ---------------------------------------------------------------------------
@@ -100,6 +101,11 @@ SCORED_PAIRS_SCHEMA: dict[str, Any] = {
     "pair_outcome": pl.String,
     "review_eligible": pl.Boolean,
     "embedding_similarity": pl.Float64,
+    "policy_rule_id": pl.String,
+    "blocking_rule_id": pl.String,
+    "effective_duplicate_threshold": pl.Float64,
+    "effective_maybe_threshold": pl.Float64,
+    "suppressed_signals": pl.List(pl.String),
 }
 
 PAIR_REASONS_SCHEMA: dict[str, Any] = {
@@ -145,6 +151,11 @@ FINALIZED_PAIRS_SCHEMA: dict[str, Any] = {
     "pair_outcome": pl.String,
     "review_eligible": pl.Boolean,
     "embedding_similarity": pl.Float64,
+    "policy_rule_id": pl.String,
+    "blocking_rule_id": pl.String,
+    "effective_duplicate_threshold": pl.Float64,
+    "effective_maybe_threshold": pl.Float64,
+    "suppressed_signals": pl.List(pl.String),
     "mitigation_reason": pl.String,
 }
 
