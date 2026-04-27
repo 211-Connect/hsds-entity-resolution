@@ -1035,6 +1035,55 @@ def test_score_candidates_source_policy_overrides_weights_and_thresholds() -> No
     assert row["pair_outcome"] == "duplicate"
 
 
+def test_score_candidates_source_policy_rule_with_any_relation_applies_cross_profile_org_pair() -> None:
+    """Organization pair rules with `any` relation should apply across source profiles."""
+    payload = _config_with_ml_disabled().model_dump()
+    payload["source_policy"] = {
+        "source_profiles": {
+            "PROFILE_WELLSKY": {"source_schemas": ["SOURCE_A"]},
+            "PROFILE_ICAROL": {"source_schemas": ["SOURCE_B"]},
+        },
+        "admission_rules": [],
+        "pair_rules": [
+            {
+                "rule_id": "il211-org-any",
+                "entity_types": ["organization"],
+                "source_relation": "any",
+                "source_profiles": ["PROFILE_WELLSKY", "PROFILE_ICAROL"],
+                "feature_overrides": {
+                    "deterministic": {
+                        "shared_email": {"enabled": True, "weight": 0.6},
+                        "shared_phone": {"enabled": False, "weight": 0.0},
+                        "shared_domain": {"enabled": False, "weight": 0.0},
+                        "shared_taxonomy": {"enabled": False, "weight": 0.0},
+                        "shared_address": {"enabled": False, "weight": 0.0},
+                        "shared_identifier": {"enabled": False, "weight": 0.0},
+                    }
+                },
+            }
+        ],
+    }
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_candidate_pairs().with_columns(
+            pl.Series("source_schema_a", ["SOURCE_A"]),
+            pl.Series("source_schema_b", ["SOURCE_B"]),
+        ),
+        denormalized_organization=_normalized_org_rows(
+            include_overlap=False,
+            left_emails=["hello@example.org"],
+            right_emails=["hello@example.org"],
+        ).with_columns(pl.Series("source_schema", ["SOURCE_A", "SOURCE_B"])),
+        denormalized_service=pl.DataFrame(),
+        config=config,
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    assert row["policy_rule_id"] == "il211-org-any"
+    assert row["deterministic_section_score"] == pytest.approx(1.0)
+
+
 def _config_with_nlp_overrides(**nlp_overrides: float | str) -> EntityResolutionRunConfig:
     """Return default run config with NLP-specific override values."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(

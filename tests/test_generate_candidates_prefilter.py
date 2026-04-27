@@ -523,25 +523,122 @@ def test_generate_candidates_legacy_fallback_still_uses_global_similarity_thresh
     assert result.candidate_pairs.is_empty()
 
 
+def test_generate_candidates_service_policy_admits_taxonomy_plus_phone_cross_source_pair() -> None:
+    """WellSky cross-source service pairs can be admitted with taxonomy plus phone."""
+    config = _source_policy_config(
+        relation="cross_source_same_profile",
+        rule_id="wellsky-taxonomy-plus-contact",
+        entity_type="service",
+        all_of=["taxonomy"],
+        any_of=["phone", "website", "address_exact"],
+    )
+    service_entities = _service_frame(
+        source_schemas=["SOURCE_A", "SOURCE_B"],
+        phones=[["555-0100"], ["555-0100"]],
+        websites=[[], []],
+        locations=[[], []],
+        taxonomies=[[{"code": "T1017"}], [{"code": "T1017"}]],
+    )
+
+    result = generate_candidates(
+        denormalized_organization=_empty_entity_frame(),
+        denormalized_service=service_entities,
+        changed_entities=_changed_entities("service"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.height == 1
+    row = result.candidate_pairs.row(0, named=True)
+    assert row["blocking_rule_id"] == "wellsky-taxonomy-plus-contact"
+    assert "shared_taxonomy" in row["candidate_reason_codes"]
+    assert "shared_phone" in row["candidate_reason_codes"]
+
+
+def test_generate_candidates_service_policy_admits_taxonomy_plus_domain_cross_source_pair() -> None:
+    """WellSky cross-source service pairs can be admitted with taxonomy plus website overlap."""
+    config = _source_policy_config(
+        relation="cross_source_same_profile",
+        rule_id="wellsky-taxonomy-plus-contact",
+        entity_type="service",
+        all_of=["taxonomy"],
+        any_of=["phone", "website", "address_exact"],
+    )
+    service_entities = _service_frame(
+        source_schemas=["SOURCE_A", "SOURCE_B"],
+        phones=[[], []],
+        websites=[["https://north.org/services"], ["http://www.north.org/help"]],
+        locations=[[], []],
+        taxonomies=[[{"code": "T1017"}], [{"code": "T1017"}]],
+    )
+
+    result = generate_candidates(
+        denormalized_organization=_empty_entity_frame(),
+        denormalized_service=service_entities,
+        changed_entities=_changed_entities("service"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.height == 1
+    row = result.candidate_pairs.row(0, named=True)
+    assert row["blocking_rule_id"] == "wellsky-taxonomy-plus-contact"
+    assert "shared_taxonomy" in row["candidate_reason_codes"]
+    assert "shared_domain" in row["candidate_reason_codes"]
+
+
+def test_generate_candidates_service_policy_rejects_taxonomy_only_cross_source_pair() -> None:
+    """WellSky cross-source service pairs still need a non-taxonomy corroborating signal."""
+    config = _source_policy_config(
+        relation="cross_source_same_profile",
+        rule_id="wellsky-taxonomy-plus-contact",
+        entity_type="service",
+        all_of=["taxonomy"],
+        any_of=["phone", "website", "address_exact"],
+    )
+    service_entities = _service_frame(
+        source_schemas=["SOURCE_A", "SOURCE_B"],
+        phones=[[], []],
+        websites=[[], []],
+        locations=[[], []],
+        taxonomies=[[{"code": "T1017"}], [{"code": "T1017"}]],
+    )
+
+    result = generate_candidates(
+        denormalized_organization=_empty_entity_frame(),
+        denormalized_service=service_entities,
+        changed_entities=_changed_entities("service"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.is_empty()
+
+
 def _source_policy_config(
     *,
     relation: str,
     rule_id: str,
     min_embedding_similarity: float | None = None,
+    entity_type: str = "organization",
+    all_of: list[str] | None = None,
+    any_of: list[str] | None = None,
 ) -> EntityResolutionRunConfig:
     """Build a generic source-policy config for candidate admission tests."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-source-policy",
         scope_id="scope-source-policy",
-        entity_type="organization",
+        entity_type=entity_type,
     ).model_dump()
     rule = {
         "rule_id": rule_id,
-        "entity_types": ["organization"],
+        "entity_types": [entity_type],
         "source_relation": relation,
         "source_profiles": ["PROFILE_SHARED"],
-        "all_of": ["address_exact"],
+        "all_of": all_of if all_of is not None else ["address_exact"],
     }
+    if any_of is not None:
+        rule["any_of"] = any_of
     if min_embedding_similarity is not None:
         rule["min_embedding_similarity"] = min_embedding_similarity
     payload["source_policy"] = {
@@ -622,6 +719,39 @@ def _organization_frame(
     )
 
 
+def _service_frame(
+    *,
+    source_schemas: list[str],
+    taxonomies: list[object],
+    locations: list[object],
+    phones: list[object] | None = None,
+    websites: list[object] | None = None,
+) -> pl.DataFrame:
+    """Build normalized-service rows with configurable overlap payloads."""
+    resolved_phones = phones if phones is not None else [[], []]
+    resolved_websites = websites if websites is not None else [[], []]
+    return pl.DataFrame(
+        {
+            "entity_id": ["svc-a", "svc-b"],
+            "entity_type": ["service", "service"],
+            "source_schema": source_schemas,
+            "name": ["Case Management", "Case Management Support"],
+            "description": ["Care coordination", "Care coordination support"],
+            "emails": [[], []],
+            "phones": resolved_phones,
+            "websites": resolved_websites,
+            "locations": locations,
+            "taxonomies": taxonomies,
+            "identifiers": [[], []],
+            "services_rollup": [[], []],
+            "organization_name": ["North Org", "North Org"],
+            "organization_id": ["org-a", "org-b"],
+            "embedding_vector": [[1.0, 0.0], [0.99, 0.01]],
+            "content_hash": ["hash-a", "hash-b"],
+        }
+    )
+
+
 def _empty_entity_frame() -> pl.DataFrame:
     """Return empty normalized-entity frame with required schema."""
     return _organization_frame(taxonomies=[[], []], locations=[[], []]).head(0)
@@ -629,9 +759,10 @@ def _empty_entity_frame() -> pl.DataFrame:
 
 def _changed_entities(entity_type: str) -> pl.DataFrame:
     """Return one changed anchor entity for candidate expansion."""
+    entity_id = "svc-a" if entity_type == "service" else "org-a"
     return pl.DataFrame(
         {
-            "entity_id": ["org-a"],
+            "entity_id": [entity_id],
             "entity_type": [entity_type],
             "delta_class": ["added"],
         }

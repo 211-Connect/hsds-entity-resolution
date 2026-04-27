@@ -24,8 +24,8 @@ class _FakeCursor:
         return self._rowcount
 
 
-def test_execute_cleanup_runs_four_templates_in_order() -> None:
-    """execute_cleanup should run delete_cascade, purge_stale, recompute, and orphan cleanup."""
+def test_execute_cleanup_runs_templates_in_order() -> None:
+    """execute_cleanup should run delete_cascade, purge, superseded scores, recompute, orphan."""
     executor = PersistenceExecutor(Path("consumer/consumer_adapter/sql"))
     cursor = _FakeCursor()
 
@@ -42,6 +42,7 @@ def test_execute_cleanup_runs_four_templates_in_order() -> None:
     assert [result.template for result in results] == [
         "delete_cascade_removed_pairs.sql",
         "purge_stale_pairs.sql",
+        "delete_superseded_duplicate_pair_scores.sql",
         "recompute_cluster_aggregates.sql",
         "delete_orphan_duplicate_reasons.sql",
     ]
@@ -82,7 +83,7 @@ def test_execute_cleanup_delete_statements_are_individual() -> None:
     )
 
     delete_commands = [cmd for cmd in cursor.commands if cmd.startswith("DELETE FROM")]
-    # delete_cascade (5) + purge_stale (4 top-level DELETEs; the fifth is inside a WITH CTE)
-    # + orphan cleanup (1) = 10
-    assert len(delete_commands) == 10
+    # delete_cascade (5) + purge_stale (5) + delete_superseded_duplicate_pair_scores (2)
+    # + orphan cleanup (1) = 13
+    assert len(delete_commands) == 13
     assert all(cmd.count("DELETE FROM") == 1 for cmd in delete_commands)
