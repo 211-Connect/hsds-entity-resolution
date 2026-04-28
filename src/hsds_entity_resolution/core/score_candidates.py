@@ -1004,6 +1004,23 @@ _SIGNAL_SHORT: dict[str, str] = {
 }
 
 
+def log_score_diagnostics(
+    *,
+    scored_pairs: pl.DataFrame,
+    pair_reasons: pl.DataFrame,
+    config: EntityResolutionRunConfig,
+) -> None:
+    """Emit signal-band and shadow-confidence diagnostics on a scored-pairs frame.
+
+    Calls both :func:`_log_signal_band_diagnostics` and
+    :func:`_log_shadow_confidence_diagnostics` so callers that assemble
+    merged shard results can emit a single consolidated diagnostic log
+    rather than per-shard fragments.
+    """
+    _log_signal_band_diagnostics(scored_pairs=scored_pairs, pair_reasons=pair_reasons, config=config)
+    _log_shadow_confidence_diagnostics(scored_pairs=scored_pairs, pair_reasons=pair_reasons)
+
+
 def _log_signal_band_diagnostics(
     *,
     scored_pairs: pl.DataFrame,

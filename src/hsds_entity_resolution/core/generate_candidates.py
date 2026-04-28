@@ -120,8 +120,16 @@ def generate_candidates(
     explicit_backfill: bool,
     force_rescore: bool = False,
     progress_logger: IncrementalProgressLogger | None = None,
+    anchor_ids_subset: frozenset[str] | None = None,
 ) -> GenerateCandidatesResult:
-    """Generate candidate pairs using embedding similarity and overlap prefilter."""
+    """Generate candidate pairs using embedding similarity and overlap prefilter.
+
+    When ``anchor_ids_subset`` is provided (generate-sharding mode), only
+    entities whose ID is in the subset are used as blocking anchors.  The full
+    entity matrix is still available for similarity look-ups; only the anchor
+    iteration is restricted.  The union of results from all subsets, after
+    deduplication by ``pair_key``, equals the result of a monolithic call.
+    """
     full_scope_rescore = explicit_backfill or force_rescore
     delta_entities = changed_entities.filter(pl.col("delta_class").is_in(["added", "changed"]))
     if delta_entities.is_empty() and not full_scope_rescore:
@@ -133,6 +141,7 @@ def generate_candidates(
         config=config,
         full_scope_rescore=full_scope_rescore,
         progress_logger=progress_logger,
+        anchor_ids_subset=anchor_ids_subset,
     )
     service_pairs, service_overview = _generate_for_entity_type(
         frame=denormalized_service,
@@ -141,6 +150,7 @@ def generate_candidates(
         config=config,
         full_scope_rescore=full_scope_rescore,
         progress_logger=progress_logger,
+        anchor_ids_subset=anchor_ids_subset,
     )
     candidate_pairs = pl.concat([org_pairs, service_pairs], how="diagonal_relaxed")
     _log_generate_candidates_overview(
@@ -165,6 +175,7 @@ def _generate_for_entity_type(
     config: EntityResolutionRunConfig,
     full_scope_rescore: bool,
     progress_logger: IncrementalProgressLogger | None = None,
+    anchor_ids_subset: frozenset[str] | None = None,
 ) -> tuple[pl.DataFrame, BlockingOverview]:
     """Generate candidates for one entity type and cap by anchor top-k."""
     type_frame = frame.filter(pl.col("entity_type") == entity_type)
@@ -177,13 +188,60 @@ def _generate_for_entity_type(
     )
     if full_scope_rescore:
         changed_ids = set(type_frame.get_column("entity_id").to_list())
+    if anchor_ids_subset is not None:
+        changed_ids &= anchor_ids_subset
     if not changed_ids:
         return _empty_candidate_frame(), _empty_blocking_overview(entity_type=entity_type)
-    entity_rows = type_frame.to_dicts()
-    _log_entity_sample(entity_rows=entity_rows, entity_type=entity_type)
-    matrix = np.array([row["embedding_vector"] for row in entity_rows], dtype=np.float32)
+
+    # ------------------------------------------------------------------ #
+    # Memory-efficient matrix construction                                 #
+    # ------------------------------------------------------------------ #
+    # The embedding_vector column is only needed to build the numpy matrix.
+    # Extracting it directly from the Polars column avoids materialising
+    # N × D Python float objects inside to_dicts() row dicts — for a
+    # 54 K × 1024-dim dataset that is ~450 MB of Python heap overhead.
+    # We also pre-compute the sample-log stats while the embedding data is
+    # still available so they remain accurate after the column is dropped.
+
+    raw_embeddings = type_frame.get_column("embedding_vector").to_list()
+    embedding_dim = len(raw_embeddings[0]) if raw_embeddings and raw_embeddings[0] else 0
+
+    # Fingerprint uniqueness for the sample log (first 8 dims, 3 dp).
+    _fp_set: set[tuple[float, ...]] = set()
+    _fp_total = 0
+    for _emb in raw_embeddings:
+        if len(_emb) >= 8:
+            _fp_set.add(tuple(round(float(_v), 3) for _v in _emb[:8]))
+            _fp_total += 1
+    emb_unique = len(_fp_set)
+    del _fp_set
+
+    matrix = np.array(raw_embeddings, dtype=np.float32)
+    del raw_embeddings  # Python list no longer needed once numpy owns the data
+
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     normalized_matrix = matrix / np.clip(norms, a_min=1e-8, a_max=None)
+    del matrix  # keep only the normalised version
+
+    # Compute schemas from Polars frame (cheaper than iterating Python dicts).
+    precomputed_schemas = sorted(
+        type_frame.get_column("source_schema").cast(pl.String).unique().to_list()
+    )
+
+    # Build entity_rows WITHOUT embedding_vector — the full matrix is already
+    # captured in normalized_matrix.  Dropping the column before to_dicts()
+    # saves the ~D × N × 8-byte Python object overhead for the inner loop.
+    entity_rows = type_frame.drop("embedding_vector").to_dicts()
+    del type_frame  # Polars frame no longer needed
+
+    _log_entity_sample(
+        entity_rows=entity_rows,
+        entity_type=entity_type,
+        embedding_dim=embedding_dim,
+        embedding_unique_count=emb_unique,
+        embedding_total_count=_fp_total,
+        precomputed_schemas=precomputed_schemas,
+    )
     id_to_idx = {row["entity_id"]: idx for idx, row in enumerate(entity_rows)}
     pair_records, overview = _collect_candidate_records(
         entity_rows=entity_rows,
@@ -568,11 +626,31 @@ def _capture_first_anchor_sample(
     )
 
 
-def _log_entity_sample(*, entity_rows: list[dict[str, Any]], entity_type: str) -> None:
+def _log_entity_sample(
+    *,
+    entity_rows: list[dict[str, Any]],
+    entity_type: str,
+    # Optional pre-computed stats — pass these when embedding_vector has already
+    # been dropped from entity_rows to save memory.  When absent, the function
+    # falls back to computing them by iterating entity_rows (backward-compatible).
+    embedding_dim: int = 0,
+    embedding_unique_count: int = 0,
+    embedding_total_count: int = 0,
+    precomputed_schemas: list[str] | None = None,
+) -> None:
     """Emit a DEBUG snapshot of the first 3 entity rows to verify denormalized field population."""
     _log = get_dagster_logger()
     sample = entity_rows[:3]
-    schemas = sorted({str(r.get("source_schema") or "?") for r in entity_rows})
+    schemas = precomputed_schemas or sorted(
+        {str(r.get("source_schema") or "?") for r in entity_rows}
+    )
+    # embedding_vector may have been dropped from entity_rows to save memory;
+    # fall back to the pre-computed dim for display.
+    _has_emb = bool(sample and "embedding_vector" in sample[0])
+
+    def _vec_len(r: dict[str, Any]) -> int:
+        return len(r.get("embedding_vector") or []) if _has_emb else embedding_dim
+
     lines = "\n".join(
         f"  [{i}] id={str(r.get('entity_id') or '?')[:20]}"
         f" schema={r.get('source_schema') or '?'}"
@@ -581,18 +659,22 @@ def _log_entity_sample(*, entity_rows: list[dict[str, Any]], entity_type: str) -
         f" phones={len(r.get('phones') or [])}"
         f" websites={len(r.get('websites') or [])}"
         f" emails={len(r.get('emails') or [])}"
-        f" vec_len={len(r.get('embedding_vector') or [])}"
+        f" vec_len={_vec_len(r)}"
         for i, r in enumerate(sample)
     )
-    # Embedding uniqueness: fingerprint each vector by its first 8 dims rounded to 3dp.
-    # Identical fingerprint = shared embedding = same name+description text in source.
-    fingerprints = [
-        tuple(round(float(v), 3) for v in (r.get("embedding_vector") or [])[:8])
-        for r in entity_rows
-        if len(r.get("embedding_vector") or []) >= 8
-    ]
-    unique_fp = len(set(fingerprints))
-    total_fp = len(fingerprints)
+    # Use pre-computed uniqueness stats when available (embedding already dropped).
+    if embedding_unique_count > 0 or embedding_total_count > 0:
+        unique_fp = embedding_unique_count
+        total_fp = embedding_total_count
+    else:
+        # Backward-compatible path: compute from entity_rows when embedding_vector is present.
+        fingerprints = [
+            tuple(round(float(v), 3) for v in (r.get("embedding_vector") or [])[:8])
+            for r in entity_rows
+            if len(r.get("embedding_vector") or []) >= 8
+        ]
+        unique_fp = len(set(fingerprints))
+        total_fp = len(fingerprints)
     dupe_pct = round(100.0 * (1 - unique_fp / total_fp), 1) if total_fp else 0.0
     _log.debug(
         "🗂 entity_sample entity_type=%s total=%d schemas=%s"
