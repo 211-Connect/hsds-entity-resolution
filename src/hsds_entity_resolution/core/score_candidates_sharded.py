@@ -149,6 +149,9 @@ def merge_score_candidates_results(
 
 def _recompute_score_delta_summary(scored_pairs: pl.DataFrame) -> pl.DataFrame:
     """Rebuild score_delta_summary from a merged scored_pairs frame."""
+    strict_dup = scored_pairs.filter(
+        pl.col("final_score") >= pl.col("effective_duplicate_threshold")
+    ).height
     return pl.DataFrame(
         {
             "candidates_scored": [scored_pairs.height],
@@ -157,6 +160,10 @@ def _recompute_score_delta_summary(scored_pairs: pl.DataFrame) -> pl.DataFrame:
             ],
             "duplicate_count": [scored_pairs.filter(pl.col("pair_outcome") == "duplicate").height],
             "maybe_count": [scored_pairs.filter(pl.col("pair_outcome") == "maybe").height],
+            "strict_duplicate_count": [strict_dup],
+            "predicted_duplicate_count": [
+                scored_pairs.filter(pl.col("predicted_duplicate")).height
+            ],
             "retained_count": [scored_pairs.filter(pl.col("review_eligible")).height],
         }
     )
@@ -173,6 +180,8 @@ def _empty_merge_result() -> ScoreCandidatesResult:
                 "ml_scored_count": [0],
                 "duplicate_count": [0],
                 "maybe_count": [0],
+                "strict_duplicate_count": [0],
+                "predicted_duplicate_count": [0],
                 "retained_count": [0],
             }
         ),

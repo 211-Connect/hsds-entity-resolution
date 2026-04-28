@@ -158,6 +158,7 @@ class FeatureOverrideConfig(BaseStrictModel):
     ml_section_weight: float | None = Field(default=None, ge=0.0, le=1.0)
     duplicate_threshold: float | None = Field(default=None, ge=0.5, le=0.99)
     maybe_threshold: float | None = Field(default=None, ge=0.3, le=0.95)
+    low_maybe_threshold: float | None = Field(default=None, ge=0.2, le=0.9)
     ml_gate_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     suppressions: list[SignalSuppressionConfig] = Field(default_factory=list)
 
@@ -183,6 +184,13 @@ class FeatureOverrideConfig(BaseStrictModel):
             and self.duplicate_threshold <= self.maybe_threshold
         ):
             message = "duplicate_threshold must be strictly greater than maybe_threshold"
+            raise ValueError(message)
+        if (
+            self.maybe_threshold is not None
+            and self.low_maybe_threshold is not None
+            and self.maybe_threshold <= self.low_maybe_threshold
+        ):
+            message = "maybe_threshold must be strictly greater than low_maybe_threshold"
             raise ValueError(message)
         section_values = [
             self.deterministic_section_weight,
@@ -277,6 +285,7 @@ class ScoringConfig(BaseStrictModel):
     ml_section_weight: float = Field(default=0.2, ge=0.0, le=1.0)
     duplicate_threshold: float = Field(default=0.82, ge=0.5, le=0.99)
     maybe_threshold: float = Field(default=0.68, ge=0.3, le=0.95)
+    low_maybe_threshold: float = Field(default=0.58, ge=0.2, le=0.9)
     min_reason_count_for_keep: int = Field(default=1, ge=0, le=5)
     deterministic: DeterministicConfig
     nlp: NlpConfig
@@ -292,6 +301,9 @@ class ScoringConfig(BaseStrictModel):
             raise ValueError(message)
         if self.duplicate_threshold <= self.maybe_threshold:
             message = "duplicate_threshold must be strictly greater than maybe_threshold"
+            raise ValueError(message)
+        if self.maybe_threshold <= self.low_maybe_threshold:
+            message = "maybe_threshold must be strictly greater than low_maybe_threshold"
             raise ValueError(message)
         return self
 
@@ -373,6 +385,7 @@ class EntityResolutionRunConfig(BaseStrictModel):
                 ml_section_weight=scoring_values["ml_section_weight"],
                 duplicate_threshold=scoring_values["duplicate_threshold"],
                 maybe_threshold=scoring_values["maybe_threshold"],
+                low_maybe_threshold=scoring_values["low_maybe_threshold"],
                 min_reason_count_for_keep=1,
             ),
             mitigation=MitigationConfig(),
@@ -421,6 +434,7 @@ def _build_scoring_defaults(*, entity_type: EntityType) -> dict[str, float]:
             "ml_gate_threshold": 0.55,
             "duplicate_threshold": 0.82,
             "maybe_threshold": 0.68,
+            "low_maybe_threshold": 0.58,
             "prior_log_odds": -0.5,
         }
     # Service-specific calibration notes:
@@ -445,5 +459,6 @@ def _build_scoring_defaults(*, entity_type: EntityType) -> dict[str, float]:
         "ml_gate_threshold": 0.50,
         "duplicate_threshold": 0.70,
         "maybe_threshold": 0.62,
+        "low_maybe_threshold": 0.54,
         "prior_log_odds": -0.25,
     }

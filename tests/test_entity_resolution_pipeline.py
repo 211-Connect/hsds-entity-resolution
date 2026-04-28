@@ -22,6 +22,19 @@ def test_config_rejects_invalid_threshold_ordering() -> None:
         _ = EntityResolutionRunConfig.model_validate(base)
 
 
+def test_config_rejects_maybe_not_above_low_maybe() -> None:
+    """Run config must keep maybe_threshold strictly above low_maybe_threshold."""
+    base = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="t1",
+        scope_id="s1",
+        entity_type="organization",
+    ).model_dump()
+    base["scoring"]["maybe_threshold"] = 0.68
+    base["scoring"]["low_maybe_threshold"] = 0.68
+    with pytest.raises(ValueError, match="low_maybe_threshold"):
+        _ = EntityResolutionRunConfig.model_validate(base)
+
+
 def test_pipeline_emits_canonical_candidate_pairs() -> None:
     """Candidate pairs must be canonicalized as `entity_a_id < entity_b_id`."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(

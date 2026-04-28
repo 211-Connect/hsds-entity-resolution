@@ -483,6 +483,7 @@ def _row_review_eligible(*, row: dict[str, Any], config: EntityResolutionRunConf
         final_score=float(final_score),
         duplicate_threshold=config.scoring.duplicate_threshold,
         maybe_threshold=config.scoring.maybe_threshold,
+        low_maybe_threshold=config.scoring.low_maybe_threshold,
     )
 
 

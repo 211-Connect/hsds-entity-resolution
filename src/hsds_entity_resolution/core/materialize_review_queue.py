@@ -117,6 +117,7 @@ def _review_eligibility_expression(
                 final_score=float(value),
                 duplicate_threshold=config.scoring.duplicate_threshold,
                 maybe_threshold=config.scoring.maybe_threshold,
+                low_maybe_threshold=config.scoring.low_maybe_threshold,
             ),
             return_dtype=pl.Boolean,
         )

@@ -50,6 +50,7 @@ def _config(
     scope_id: str,
     duplicate_threshold: float = 0.82,
     maybe_threshold: float = 0.68,
+    low_maybe_threshold: float | None = None,
     min_embedding_similarity: float = 0.65,
 ) -> EntityResolutionRunConfig:
     """Build an org-scoped config, optionally overriding key thresholds."""
@@ -60,10 +61,17 @@ def _config(
     )
     raw = base.model_dump()
     raw["mitigation"]["enabled"] = True
-    if duplicate_threshold == 0.82 and maybe_threshold == 0.68 and min_embedding_similarity == 0.65:
+    if (
+        duplicate_threshold == 0.82
+        and maybe_threshold == 0.68
+        and low_maybe_threshold is None
+        and min_embedding_similarity == 0.65
+    ):
         return EntityResolutionRunConfig.model_validate(raw)
     raw["scoring"]["duplicate_threshold"] = duplicate_threshold
     raw["scoring"]["maybe_threshold"] = maybe_threshold
+    if low_maybe_threshold is not None:
+        raw["scoring"]["low_maybe_threshold"] = low_maybe_threshold
     raw["mitigation"]["min_embedding_similarity"] = min_embedding_similarity
     return EntityResolutionRunConfig.model_validate(raw)
 
@@ -364,19 +372,22 @@ def test_s1b_full_pipeline_entity_change_drops_score_emits_score_dropped() -> No
 
 
 def test_s1c_pair_demotes_from_duplicate_to_maybe_stays_retained() -> None:
-    """S1-C: A pair re-scoring in the maybe band stays retained but predicted_duplicate flips."""
+    """S1-C: A pair re-scoring in the soft-maybe band stays retained with predicted_duplicate False."""
     config = _config(team_id="team-s1c", scope_id="s1c")
     previous_pair_state = pl.DataFrame([_pair_state_row(_PAIR_KEY, "org-a", "org-b", "s1c")])
 
-    # The pair was a duplicate on run 1; now it re-scores between maybe and dup thresholds.
-    maybe_score = (config.scoring.maybe_threshold + config.scoring.duplicate_threshold) / 2.0
+    # Strict duplicate line is duplicate_threshold; predicted-duplicate floor is maybe_threshold.
+    # Land between low_maybe and maybe_threshold (soft maybe band).
+    low_m = config.scoring.low_maybe_threshold
+    maybe_m = config.scoring.maybe_threshold
+    soft_maybe_score = (low_m + maybe_m) / 2.0
     scored_pairs = pl.DataFrame(
         [
             _scored_pair_row(
                 _PAIR_KEY,
                 "org-a",
                 "org-b",
-                maybe_score,
+                soft_maybe_score,
                 predicted_duplicate=False,
                 embedding_similarity=0.8,
             )
@@ -392,7 +403,7 @@ def test_s1c_pair_demotes_from_duplicate_to_maybe_stays_retained() -> None:
         config=config,
     )
 
-    # Pair must NOT be removed – it is still review-eligible (maybe band).
+    # Pair must NOT be removed – it is still review-eligible (soft maybe band).
     _assert_not_removed(result, _PAIR_KEY)
     _assert_retained(result, _PAIR_KEY)
 
@@ -404,11 +415,11 @@ def test_s1c_pair_demotes_from_duplicate_to_maybe_stays_retained() -> None:
 
 
 def test_s1d_maybe_pair_drops_below_maybe_emits_score_dropped() -> None:
-    """S1-D: A previously maybe-band pair that drops below maybe_threshold is score_dropped."""
+    """S1-D: A previously review-eligible pair that drops below low_maybe_threshold is score_dropped."""
     config = _config(team_id="team-s1d", scope_id="s1d")
     previous_pair_state = pl.DataFrame([_pair_state_row(_PAIR_KEY, "org-a", "org-b", "s1d")])
-    # Score just below maybe_threshold.
-    below_maybe = config.scoring.maybe_threshold - 0.05
+    # Score just below low_maybe_threshold (leaves the review queue entirely).
+    below_maybe = config.scoring.low_maybe_threshold - 0.05
     scored_pairs = pl.DataFrame(
         [_scored_pair_row(_PAIR_KEY, "org-a", "org-b", below_maybe, predicted_duplicate=False)]
     )
@@ -562,10 +573,10 @@ def test_s1g_deleted_entity_resurrected_rebuilds_pair() -> None:
 
 
 def test_s2a_both_entities_change_pair_scores_below_maybe() -> None:
-    """S2-A: Both entities change to remove all shared signals; pair falls below maybe."""
+    """S2-A: Both entities change to remove all shared signals; pair falls below low_maybe."""
     config = _config(team_id="team-s2a", scope_id="s2a")
     previous_pair_state = pl.DataFrame([_pair_state_row(_PAIR_KEY, "org-a", "org-b", "s2a")])
-    below_score = config.scoring.maybe_threshold - 0.10
+    below_score = config.scoring.low_maybe_threshold - 0.10
     scored_pairs = pl.DataFrame(
         [_scored_pair_row(_PAIR_KEY, "org-a", "org-b", below_score, predicted_duplicate=False)]
     )
@@ -889,8 +900,8 @@ def test_s3d_cluster_edge_drops_below_maybe_pair_removed_cluster_shrinks() -> No
     )
     assert result_run1.clusters.row(0, named=True)["pair_count"] == 3
 
-    # Simulate that A__C dropped below maybe_threshold so it is now removed.
-    below_score = config.scoring.maybe_threshold - 0.05
+    # Simulate that A__C dropped below low_maybe_threshold so it is now removed.
+    below_score = config.scoring.low_maybe_threshold - 0.05
     removed_pair_ac = pl.DataFrame({"pair_key": ["a__c"], "cleanup_reason": ["score_dropped"]})
     finalized_run2 = _finalized_pairs(
         _dup_pair("a__b", "a", "b"),
@@ -1054,8 +1065,8 @@ def test_s3g_contradictory_triangle_limits_transitive_closure() -> None:
 
 
 def test_s4a_duplicate_threshold_raised_pair_demotes_to_maybe() -> None:
-    """S4-A: Raising duplicate_threshold via force_rescore re-classifies a pair that was
-    formerly duplicate as maybe; it stays retained but predicted_duplicate becomes False."""
+    """S4-A: Raising duplicate_threshold via force_rescore demotes strict duplicate tier but
+    scores at or above maybe_threshold remain predicted_duplicate=True."""
     scope_id = "s4a"
 
     # Run 1: entity pair with default thresholds → retained (maybe or duplicate).
@@ -1093,30 +1104,33 @@ def test_s4a_duplicate_threshold_raised_pair_demotes_to_maybe() -> None:
     _assert_not_removed(run2, _PAIR_KEY)
     _assert_retained(run2, _PAIR_KEY)
 
-    # Predicted duplicate must be False because score < new duplicate_threshold.
+    # Score remains at or above maybe_threshold (predicted-duplicate floor) but below
+    # the raised strict duplicate line — still predicted_duplicate True.
     finalized_row = run2.scored_pairs.filter(pl.col("pair_key") == _PAIR_KEY)
     if finalized_row.height > 0:
-        assert finalized_row.row(0, named=True)["predicted_duplicate"] is False
+        assert finalized_row.row(0, named=True)["predicted_duplicate"] is True
 
 
 def test_s4b_maybe_threshold_raised_pair_emits_score_dropped() -> None:
-    """S4-B: Raising maybe_threshold via force_rescore pushes a previously maybe-band pair
-    below the new threshold; it is emitted as score_dropped."""
+    """S4-B: Raising maybe_threshold (and low_maybe) clears pairs that fall out of all review bands."""
     config = _config(team_id="team-s4b", scope_id="s4b")
-    # Build a state where the pair scored in the maybe band under the old thresholds.
-    old_maybe_score = config.scoring.maybe_threshold + 0.02  # just above old threshold
+    # Score sits in the soft-maybe band under the default thresholds.
+    low_m = config.scoring.low_maybe_threshold
+    maybe_m = config.scoring.maybe_threshold
+    band_score = (low_m + maybe_m) / 2.0
     previous_pair_state = pl.DataFrame([_pair_state_row(_PAIR_KEY, "org-a", "org-b", "s4b")])
     scored_pairs = pl.DataFrame(
-        [_scored_pair_row(_PAIR_KEY, "org-a", "org-b", old_maybe_score, predicted_duplicate=False)]
+        [_scored_pair_row(_PAIR_KEY, "org-a", "org-b", band_score, predicted_duplicate=False)]
     )
-    # Simulate force_rescore with a raised maybe_threshold by calling apply_mitigation
-    # with a config where maybe_threshold is now above the old_maybe_score.
-    new_threshold = old_maybe_score + 0.05
+    # Raised floors: maybe and low_maybe both above the carried score → no longer review-eligible.
+    new_threshold = maybe_m + 0.08
+    new_low = band_score + 0.05
     config_raised = _config(
         team_id="team-s4b",
         scope_id="s4b",
         duplicate_threshold=max(0.83, new_threshold + 0.05),
         maybe_threshold=new_threshold,
+        low_maybe_threshold=new_low,
     )
     result = apply_mitigation(
         scored_pairs=scored_pairs,
@@ -1133,8 +1147,10 @@ def test_s4c_section_weights_shifted_borderline_pair_changes_tier() -> None:
     across a tier boundary in either direction."""
     scope_id = "s4c"
     config = _config(team_id=f"team-{scope_id}", scope_id=scope_id)
-    # Build a borderline pair in the maybe band.
-    borderline = config.scoring.maybe_threshold + 0.01
+    # Build a borderline pair in the soft-maybe band (between low_maybe and maybe_threshold).
+    low_m = config.scoring.low_maybe_threshold
+    maybe_m = config.scoring.maybe_threshold
+    borderline = (low_m + maybe_m) / 2.0
     previous_pair_state = pl.DataFrame([_pair_state_row(_PAIR_KEY, "org-a", "org-b", scope_id)])
     scored_pairs = pl.DataFrame(
         [_scored_pair_row(_PAIR_KEY, "org-a", "org-b", borderline, predicted_duplicate=False)]
@@ -1150,8 +1166,8 @@ def test_s4c_section_weights_shifted_borderline_pair_changes_tier() -> None:
     )
     _assert_retained(result1, _PAIR_KEY)
 
-    # Simulate that shifted weights produce a lower score: now below maybe_threshold.
-    new_score = config.scoring.maybe_threshold - 0.03
+    # Simulate that shifted weights produce a lower score: now below low_maybe_threshold.
+    new_score = config.scoring.low_maybe_threshold - 0.03
     scored_pairs_lower = pl.DataFrame(
         [_scored_pair_row(_PAIR_KEY, "org-a", "org-b", new_score, predicted_duplicate=False)]
     )

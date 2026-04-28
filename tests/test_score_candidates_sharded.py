@@ -332,8 +332,15 @@ class TestMergeScoreCandidatesResults:
             scored_pairs=pl.DataFrame(schema=SCORED_PAIRS_SCHEMA),
             pair_reasons=pl.DataFrame(schema=PAIR_REASONS_SCHEMA),
             score_delta_summary=pl.DataFrame(
-                {"candidates_scored": [0], "ml_scored_count": [0], "duplicate_count": [0],
-                 "maybe_count": [0], "retained_count": [0]}
+                {
+                    "candidates_scored": [0],
+                    "ml_scored_count": [0],
+                    "duplicate_count": [0],
+                    "maybe_count": [0],
+                    "strict_duplicate_count": [0],
+                    "predicted_duplicate_count": [0],
+                    "retained_count": [0],
+                }
             ),
         )
         result = merge_score_candidates_results([empty, empty])

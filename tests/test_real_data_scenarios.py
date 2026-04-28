@@ -321,11 +321,12 @@ def test_r4_remove_shared_988_phone_score_drops() -> None:
 
     Losing the shared_phone signal (weighted contribution ≈ 0.11) reduces the
     deterministic section score.  The pair must either:
-      - remain in the review queue but demote from duplicate to maybe band, OR
-      - fall below maybe_threshold and be emitted as score_dropped
+      - remain in the review queue (possibly still predicted_duplicate if the
+        score stays at or above maybe_threshold), OR
+      - fall below low_maybe_threshold and be emitted as score_dropped
 
-    In either case the pair must NOT still be predicted_duplicate=True,
-    because the full signal set was the sole reason it cleared dup_threshold=0.70.
+    The score should not remain a strict duplicate (final_score below
+    duplicate_threshold) unless the full signal set still clears that bar.
     """
     scope_id = "r4"
     config = _svc_config(scope_id)
@@ -365,8 +366,9 @@ def test_r4_remove_shared_988_phone_score_drops() -> None:
     if retained:
         scored = run2.scored_pairs.filter(pl.col("pair_key") == _SVC_PAIR_KEY)
         if scored.height > 0:
-            assert scored.row(0, named=True)["predicted_duplicate"] is False, (
-                "Pair stayed in maybe band but should no longer be predicted_duplicate=True "
+            row = scored.row(0, named=True)
+            assert row["final_score"] < row["effective_duplicate_threshold"], (
+                "Pair should no longer clear the strict duplicate threshold "
                 "after losing the shared_phone signal"
             )
     else:

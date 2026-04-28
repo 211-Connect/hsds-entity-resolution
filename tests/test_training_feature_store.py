@@ -78,7 +78,7 @@ def test_build_feature_row_persists_service_override_features() -> None:
     )
 
     assert feature_row["FEATURE_SCHEMA_VERSION"] == FEATURE_SCHEMA_VERSION
-    assert feature_row["BASELINE_SCORE_BAND"] == "maybe"
+    assert feature_row["BASELINE_SCORE_BAND"] == "duplicate"
     assert feature_row["FUZZY_NAME"] == 0.93
     assert feature_row["SHARED_PHONE"] == 1.0
     assert feature_row["SHARED_ADDRESS"] == 0.5

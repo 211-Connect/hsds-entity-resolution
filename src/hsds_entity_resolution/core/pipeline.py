@@ -621,6 +621,10 @@ def _augment_summary(
         score_row.get("duplicate_count", score_row["retained_count"])
     )
     summary_row["maybe_count"] = int(score_row.get("maybe_count", 0))
+    summary_row["strict_duplicate_count"] = int(score_row.get("strict_duplicate_count", 0))
+    summary_row["predicted_duplicate_count"] = int(
+        score_row.get("predicted_duplicate_count", score_row.get("duplicate_count", 0))
+    )
     summary_row["retained_count"] = int(score_row["retained_count"])
     summary_row["mitigated_count"] = int(mitigated.mitigation_events.height)
     summary_row["cluster_count"] = int(clustered.clusters.height)

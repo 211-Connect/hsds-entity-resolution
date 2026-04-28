@@ -40,6 +40,7 @@ class EffectiveScoringPolicy:
     rule_id: str
     duplicate_threshold: float
     maybe_threshold: float
+    low_maybe_threshold: float
     suppressed_signals: list[str]
     feature_overrides: FeatureOverrideConfig
 
@@ -177,6 +178,7 @@ def resolve_scoring_policy(
     scoring = config.scoring
     duplicate_threshold = overrides.duplicate_threshold or scoring.duplicate_threshold
     maybe_threshold = overrides.maybe_threshold or scoring.maybe_threshold
+    low_maybe_threshold = overrides.low_maybe_threshold or scoring.low_maybe_threshold
     suppressed = _resolve_suppressed_signals(
         overrides=overrides,
         contributed_signals=contributed_signals or set(),
@@ -185,6 +187,7 @@ def resolve_scoring_policy(
         rule_id=rule_id,
         duplicate_threshold=duplicate_threshold,
         maybe_threshold=maybe_threshold,
+        low_maybe_threshold=low_maybe_threshold,
         suppressed_signals=suppressed,
         feature_overrides=overrides,
     )

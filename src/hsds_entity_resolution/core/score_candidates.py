@@ -138,6 +138,9 @@ def score_candidates(
         scored_pairs=scored_pairs, pair_reasons=pair_reasons, config=config
     )
     _log_shadow_confidence_diagnostics(scored_pairs=scored_pairs, pair_reasons=pair_reasons)
+    strict_dup = scored_pairs.filter(
+        pl.col("final_score") >= pl.col("effective_duplicate_threshold")
+    ).height
     summary = pl.DataFrame(
         {
             "candidates_scored": [scored_pairs.height],
@@ -146,6 +149,10 @@ def score_candidates(
             ],
             "duplicate_count": [scored_pairs.filter(pl.col("pair_outcome") == "duplicate").height],
             "maybe_count": [scored_pairs.filter(pl.col("pair_outcome") == "maybe").height],
+            "strict_duplicate_count": [strict_dup],
+            "predicted_duplicate_count": [
+                scored_pairs.filter(pl.col("predicted_duplicate")).height
+            ],
             "retained_count": [scored_pairs.filter(pl.col("review_eligible")).height],
         }
     )
@@ -370,6 +377,7 @@ def _finalize_pair(
         final_score=final_score,
         duplicate_threshold=policy.duplicate_threshold,
         maybe_threshold=policy.maybe_threshold,
+        low_maybe_threshold=policy.low_maybe_threshold,
     )
     predicted_duplicate = pair_outcome == "duplicate"
     review_eligible = is_review_eligible_outcome(pair_outcome)
@@ -404,6 +412,7 @@ def _finalize_pair(
         "blocking_rule_id": str(candidate.get("blocking_rule_id") or "unknown"),
         "effective_duplicate_threshold": policy.duplicate_threshold,
         "effective_maybe_threshold": policy.maybe_threshold,
+        "effective_low_maybe_threshold": policy.low_maybe_threshold,
         "suppressed_signals": policy.suppressed_signals,
     }
     return ScoredPairRecord(row=row, reasons=reasons)
@@ -573,12 +582,14 @@ def _log_scoring_configuration(*, config: EntityResolutionRunConfig) -> None:
         deterministic_signals.append("shared_identifier")
     logger.info(
         "ℹ️ score_candidates_config entity_type=%s ml_enabled=%s"
-        " deterministic_signals=%s duplicate_threshold=%.2f maybe_threshold=%.2f",
+        " deterministic_signals=%s duplicate_threshold=%.2f maybe_threshold=%.2f"
+        " low_maybe_threshold=%.2f",
         entity_type,
         config.scoring.ml.ml_enabled,
         deterministic_signals,
         config.scoring.duplicate_threshold,
         config.scoring.maybe_threshold,
+        config.scoring.low_maybe_threshold,
     )
 
 
@@ -1172,10 +1183,12 @@ def _log_signal_count_table(
             gate_pass[sc] += 1
 
     logger.info(
-        "score_candidates signal×band | entity_type=%s dup_t=%.2f maybe_t=%.2f ml_gate=%.2f",
+        "score_candidates signal×band | entity_type=%s dup_t=%.2f maybe_t=%.2f low_maybe_t=%.2f"
+        " ml_gate=%.2f",
         config.metadata.entity_type,
         config.scoring.duplicate_threshold,
         config.scoring.maybe_threshold,
+        config.scoring.low_maybe_threshold,
         gate,
     )
     logger.info(
@@ -1258,6 +1271,8 @@ def _empty_result() -> ScoreCandidatesResult:
                 "ml_scored_count": [0],
                 "duplicate_count": [0],
                 "maybe_count": [0],
+                "strict_duplicate_count": [0],
+                "predicted_duplicate_count": [0],
                 "retained_count": [0],
             }
         ),

@@ -44,9 +44,10 @@ def cluster_pairs(
 ) -> ClusterPairsResult:
     """Build correlation clusters and bridge rows from finalized scored pairs.
 
-    Clustering covers all *review-eligible* pairs — both the ``duplicate`` band
-    (score ≥ duplicate_threshold) and the ``maybe`` band (score ≥ maybe_threshold).
-    Edge weights are signed relative to ``maybe_threshold`` so that every
+    Clustering covers all *review-eligible* pairs — predicted-duplicate pairs
+    (score ≥ maybe_threshold) and the softer ``maybe`` band
+    (low_maybe_threshold ≤ score < maybe_threshold).
+    Edge weights are signed relative to ``low_maybe_threshold`` so that every
     review-eligible pair produces a non-negative edge and therefore a cluster
     of at least two nodes.
 
@@ -79,11 +80,11 @@ def cluster_pairs(
             clusters=_empty_clusters_frame(),
             cluster_pairs=_empty_cluster_pairs_frame(),
         )
-    # Use maybe_threshold as the edge-weight sign pivot so that every
+    # Use low_maybe_threshold as the edge-weight sign pivot so that every
     # review-eligible pair produces a non-negative edge and its two nodes
     # always end up in the same connected component.
     eligible_edge_weights = _edge_weights_from_rows(
-        active=active, threshold=config.scoring.maybe_threshold
+        active=active, threshold=config.scoring.low_maybe_threshold
     )
     # Full edge weights include non-eligible pairs (negative edges) so that the
     # CC solver can resolve contradictory triangles — e.g. A≈B, A≈C, but B≠C.
@@ -93,7 +94,7 @@ def cluster_pairs(
     if removed_keys:
         all_active = all_active.filter(~pl.col("pair_key").is_in(sorted(removed_keys)))
     full_edge_weights = _edge_weights_from_rows(
-        active=all_active, threshold=config.scoring.maybe_threshold
+        active=all_active, threshold=config.scoring.low_maybe_threshold
     )
     components = _positive_components(
         edges=eligible_edge_weights,

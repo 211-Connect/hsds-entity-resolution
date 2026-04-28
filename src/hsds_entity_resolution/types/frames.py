@@ -105,6 +105,7 @@ SCORED_PAIRS_SCHEMA: dict[str, Any] = {
     "blocking_rule_id": pl.String,
     "effective_duplicate_threshold": pl.Float64,
     "effective_maybe_threshold": pl.Float64,
+    "effective_low_maybe_threshold": pl.Float64,
     "suppressed_signals": pl.List(pl.String),
 }
 
@@ -155,6 +156,7 @@ FINALIZED_PAIRS_SCHEMA: dict[str, Any] = {
     "blocking_rule_id": pl.String,
     "effective_duplicate_threshold": pl.Float64,
     "effective_maybe_threshold": pl.Float64,
+    "effective_low_maybe_threshold": pl.Float64,
     "suppressed_signals": pl.List(pl.String),
     "mitigation_reason": pl.String,
 }

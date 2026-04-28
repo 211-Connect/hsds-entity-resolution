@@ -751,6 +751,7 @@ def test_score_candidates_classifies_threshold_bands_and_review_eligibility(
     payload["scoring"]["ml_section_weight"] = 0.0
     payload["scoring"]["duplicate_threshold"] = 0.8
     payload["scoring"]["maybe_threshold"] = 0.6
+    payload["scoring"]["low_maybe_threshold"] = 0.5
     config = EntityResolutionRunConfig.model_validate(payload)
 
     score_by_pair = {"a__b": 0.8, "c__d": 0.6, "e__f": 0.59}
@@ -816,16 +817,16 @@ def test_score_candidates_classifies_threshold_bands_and_review_eligibility(
     assert by_key["a__b"]["pair_outcome"] == "duplicate"
     assert by_key["a__b"]["predicted_duplicate"] is True
     assert by_key["a__b"]["review_eligible"] is True
-    assert by_key["c__d"]["pair_outcome"] == "maybe"
-    assert by_key["c__d"]["predicted_duplicate"] is False
+    assert by_key["c__d"]["pair_outcome"] == "duplicate"
+    assert by_key["c__d"]["predicted_duplicate"] is True
     assert by_key["c__d"]["review_eligible"] is True
-    assert by_key["e__f"]["pair_outcome"] == "below_maybe"
+    assert by_key["e__f"]["pair_outcome"] == "maybe"
     assert by_key["e__f"]["predicted_duplicate"] is False
-    assert by_key["e__f"]["review_eligible"] is False
+    assert by_key["e__f"]["review_eligible"] is True
     summary = result.score_delta_summary.row(0, named=True)
-    assert summary["duplicate_count"] == 1
+    assert summary["duplicate_count"] == 2
     assert summary["maybe_count"] == 1
-    assert summary["retained_count"] == 2
+    assert summary["retained_count"] == 3
 
 
 def test_shadow_confidence_preserves_legacy_score_and_avoids_trivial_saturation() -> None:
@@ -990,6 +991,7 @@ def test_score_candidates_source_policy_overrides_weights_and_thresholds() -> No
     payload["scoring"]["ml_section_weight"] = 0.0
     payload["scoring"]["duplicate_threshold"] = 0.95
     payload["scoring"]["maybe_threshold"] = 0.50
+    payload["scoring"]["low_maybe_threshold"] = 0.35
     payload["source_policy"] = {
         "source_profiles": {"PROFILE_SHARED": {"source_schemas": ["SOURCE_A"]}},
         "admission_rules": [],
@@ -1010,6 +1012,7 @@ def test_score_candidates_source_policy_overrides_weights_and_thresholds() -> No
                     },
                     "duplicate_threshold": 0.80,
                     "maybe_threshold": 0.40,
+                    "low_maybe_threshold": 0.30,
                 },
             }
         ],
@@ -1031,6 +1034,7 @@ def test_score_candidates_source_policy_overrides_weights_and_thresholds() -> No
     assert row["policy_rule_id"] == "email-only-promoted"
     assert row["effective_duplicate_threshold"] == 0.80
     assert row["effective_maybe_threshold"] == 0.40
+    assert row["effective_low_maybe_threshold"] == 0.30
     assert row["deterministic_section_score"] == pytest.approx(1.0)
     assert row["pair_outcome"] == "duplicate"
 
@@ -1116,6 +1120,7 @@ def _config_for_address_flip() -> EntityResolutionRunConfig:
     payload["scoring"]["ml_section_weight"] = 0.0
     payload["scoring"]["duplicate_threshold"] = 0.5
     payload["scoring"]["maybe_threshold"] = 0.3
+    payload["scoring"]["low_maybe_threshold"] = 0.2
     payload["scoring"]["deterministic"]["shared_email"]["weight"] = 0.0
     payload["scoring"]["deterministic"]["shared_phone"]["weight"] = 0.0
     payload["scoring"]["deterministic"]["shared_domain"]["weight"] = 0.0

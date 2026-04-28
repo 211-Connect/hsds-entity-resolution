@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 from consumer.consumer_adapter.artifact_contracts import assert_valid_artifacts
 from consumer.consumer_adapter.mapper import (
     ConsumerRunContext,
@@ -225,9 +226,11 @@ def test_deduplication_run_mapping_uses_duplicate_count_for_threshold_metrics() 
     run_summary = pl.DataFrame(
         {
             "candidate_count": [9],
-            "duplicate_count": [2],
+            "duplicate_count": [5],
             "maybe_count": [3],
-            "retained_count": [5],
+            "strict_duplicate_count": [2],
+            "predicted_duplicate_count": [5],
+            "retained_count": [8],
         }
     )
     mapped = _map_deduplication_run(
@@ -247,7 +250,8 @@ def test_deduplication_run_mapping_uses_duplicate_count_for_threshold_metrics() 
     assert row["JOB_NAME"] == "il211_regional"
     assert row["TARGET_SCHEMAS"] == ["NE211", "DUPAGEC211"]
     assert row["PAIRS_ABOVE_THRESHOLD"] == 2
-    assert row["PAIRS_PREDICTED_DUPLICATE"] == 2
+    assert row["PAIRS_PREDICTED_DUPLICATE"] == 5
+    assert row["LOW_MAYBE_THRESHOLD"] == pytest.approx(config.scoring.low_maybe_threshold)
 
 
 def test_duplicate_reason_ids_are_scoped_to_the_score_row() -> None:

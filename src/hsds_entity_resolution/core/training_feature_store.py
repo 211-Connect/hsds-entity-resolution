@@ -247,6 +247,9 @@ def _load_reviewed_pairs_from_runtime(
                 dps.RAW_NLP_SCORE,
                 dps.RAW_ML_SCORE,
                 dps.EMBEDDING_SIMILARITY,
+                dps.EFFECTIVE_DUPLICATE_THRESHOLD,
+                dps.EFFECTIVE_MAYBE_THRESHOLD,
+                dps.EFFECTIVE_LOW_MAYBE_THRESHOLD,
                 dps.IS_DUPLICATE AS TEAM_REVIEW_LABEL,
                 dps.REVIEWED_BY,
                 dps.REVIEWED_AT,
@@ -297,6 +300,9 @@ def _load_reviewed_pairs_from_runtime(
             rs.REVIEWED_BY,
             rs.REVIEWED_AT,
             rs.SCORE_CREATED_AT,
+            rs.EFFECTIVE_DUPLICATE_THRESHOLD,
+            rs.EFFECTIVE_MAYBE_THRESHOLD,
+            rs.EFFECTIVE_LOW_MAYBE_THRESHOLD,
             dp.ENTITY_A_ID,
             dp.ENTITY_B_ID,
             CASE
@@ -574,8 +580,17 @@ def _ensure_training_pair(
 
     training_pair_id = str(uuid.uuid4())
     baseline_confidence_score = _baseline_confidence_score(row)
-    duplicate_threshold = _safe_float(row.get("DUPLICATE_THRESHOLD"), default=1.0)
-    maybe_threshold = _safe_float(row.get("MAYBE_THRESHOLD"), default=1.0)
+    duplicate_threshold = _safe_float(
+        row.get("EFFECTIVE_DUPLICATE_THRESHOLD") or row.get("DUPLICATE_THRESHOLD"), default=1.0
+    )
+    maybe_threshold = _safe_float(
+        row.get("EFFECTIVE_MAYBE_THRESHOLD") or row.get("MAYBE_THRESHOLD"), default=1.0
+    )
+    low_raw = row.get("EFFECTIVE_LOW_MAYBE_THRESHOLD")
+    if low_raw is None:
+        low_maybe_threshold = max(0.0, maybe_threshold - 0.08)
+    else:
+        low_maybe_threshold = _safe_float(low_raw, max(0.0, maybe_threshold - 0.08))
     pipeline_config_snapshot = _coerce_variant(row.get("PIPELINE_CONFIG_SNAPSHOT"))
     scalar_placeholders = ", ".join(["%s"] * 26)
     cursor.execute(
@@ -610,8 +625,8 @@ def _ensure_training_pair(
             row.get("SOURCE_PAIR_ID"),
             source_score_id,
             baseline_confidence_score,
-            baseline_confidence_score >= duplicate_threshold,
             baseline_confidence_score >= maybe_threshold,
+            low_maybe_threshold <= baseline_confidence_score < maybe_threshold,
             _safe_float(row.get("CONFIDENCE_SCORE"), default=0.0),
             _safe_float(row.get("DETERMINISTIC_SECTION_SCORE"), default=0.0),
             _safe_float(row.get("NLP_SECTION_SCORE"), default=0.0),
@@ -621,7 +636,11 @@ def _ensure_training_pair(
             _safe_float(row.get("RAW_ML_SCORE"), default=0.0),
             _safe_float(row.get("EMBEDDING_SIMILARITY"), default=0.0),
             bool(row.get("PREDICTED_DUPLICATE")),
-            _safe_float(row.get("CONFIDENCE_SCORE"), default=0.0) >= maybe_threshold,
+            (
+                low_maybe_threshold
+                <= _safe_float(row.get("CONFIDENCE_SCORE"), default=0.0)
+                < maybe_threshold
+            ),
             bool(row.get("WAS_MITIGATED")),
             _safe_optional_str(row.get("MITIGATION_REASON")),
             json.dumps(row.get("PIPELINE_SIGNALS") or []),
@@ -935,11 +954,21 @@ def _baseline_confidence_score(row: dict[str, Any]) -> float:
 def _score_band_for_row(row: dict[str, Any]) -> str:
     """Resolve the baseline score band persisted with a feature row."""
     baseline_confidence_score = _baseline_confidence_score(row)
-    duplicate_threshold = _safe_float(row.get("DUPLICATE_THRESHOLD"), default=1.0)
-    maybe_threshold = _safe_float(row.get("MAYBE_THRESHOLD"), default=1.0)
-    if baseline_confidence_score >= duplicate_threshold:
-        return "duplicate"
+    duplicate_threshold = _safe_float(
+        row.get("EFFECTIVE_DUPLICATE_THRESHOLD") or row.get("DUPLICATE_THRESHOLD"), default=1.0
+    )
+    maybe_threshold = _safe_float(
+        row.get("EFFECTIVE_MAYBE_THRESHOLD") or row.get("MAYBE_THRESHOLD"), default=1.0
+    )
+    low_raw = row.get("EFFECTIVE_LOW_MAYBE_THRESHOLD")
+    if low_raw is None:
+        low_maybe_threshold = max(0.0, maybe_threshold - 0.08)
+    else:
+        low_maybe_threshold = _safe_float(low_raw, max(0.0, maybe_threshold - 0.08))
+    _ = duplicate_threshold
     if baseline_confidence_score >= maybe_threshold:
+        return "duplicate"
+    if baseline_confidence_score >= low_maybe_threshold:
         return "maybe"
     return "below_maybe"
 

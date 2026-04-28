@@ -267,8 +267,8 @@ def test_materialize_review_queue_includes_maybe_tier_and_excludes_below_maybe()
             "review_eligible": [True, True, False],
             "final_score": [
                 config.scoring.duplicate_threshold,
-                config.scoring.maybe_threshold,
-                config.scoring.maybe_threshold - 0.01,
+                (config.scoring.low_maybe_threshold + config.scoring.maybe_threshold) / 2.0,
+                config.scoring.low_maybe_threshold - 0.01,
             ],
             "embedding_similarity": [0.9, 0.8, 0.8],
         }
