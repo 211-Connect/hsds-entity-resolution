@@ -48,11 +48,43 @@ class _RecordingEmbeddingAdapter:
         self.calls: list[list[str]] = []
         self._vector = vector
 
-    def embed_batch_sync(self, texts: list[str], batch_size: int = 128) -> list[list[float]]:
+    def embed_batch_sync(
+        self,
+        texts: list[str],
+        batch_size: int = 128,
+        *,
+        on_chunk_complete: Any | None = None,
+    ) -> list[list[float]]:
         """Record input texts and return fixed vectors."""
         del batch_size
         self.calls.append(texts)
-        return [self._vector for _ in texts]
+        embeddings = [self._vector for _ in texts]
+        if on_chunk_complete is not None:
+            on_chunk_complete(0, texts, embeddings)
+        return embeddings
+
+
+class _CheckpointThenFailEmbeddingAdapter:
+    """Embedding adapter fake that checkpoints the first chunk then fails."""
+
+    def __init__(self, vector: list[float]) -> None:
+        self.calls: list[list[str]] = []
+        self._vector = vector
+
+    def embed_batch_sync(
+        self,
+        texts: list[str],
+        batch_size: int = 128,
+        *,
+        on_chunk_complete: Any | None = None,
+    ) -> list[list[float]]:
+        del batch_size
+        self.calls.append(texts)
+        first_chunk = texts[:1]
+        first_embeddings = [self._vector for _ in first_chunk]
+        if on_chunk_complete is not None and first_chunk:
+            on_chunk_complete(0, first_chunk, first_embeddings)
+        raise RuntimeError("500 internal server error")
 
 
 def _make_adapter(*, tmp_path: Path, embedding_vector: list[float]) -> ConsumerAdapter:
@@ -66,16 +98,23 @@ def _make_adapter(*, tmp_path: Path, embedding_vector: list[float]) -> ConsumerA
     )
 
 
+def _make_frame(*, rows: list[dict[str, object]]) -> pl.DataFrame:
+    """Return an entity frame for embedding freshness tests."""
+    return pl.DataFrame(rows)
+
+
 def _single_row_frame(*, vector: list[float]) -> pl.DataFrame:
     """Return one-row entity frame used by freshness tests."""
-    return pl.DataFrame(
-        {
-            "entity_id": ["org-1"],
-            "source_schema": ["TENANT_A"],
-            "name": ["Alpha"],
-            "description": ["Updated profile"],
-            "embedding_vector": [vector],
-        }
+    return _make_frame(
+        rows=[
+            {
+                "entity_id": "org-1",
+                "source_schema": "TENANT_A",
+                "name": "Alpha",
+                "description": "Updated profile",
+                "embedding_vector": vector,
+            }
+        ]
     )
 
 
@@ -192,3 +231,68 @@ def test_ensure_embeddings_logs_hash_mismatch_diagnostics(
         "Embedding cache hash mismatch sample: tenant=TENANT_A entity_type=organization "
         "entity_id=org-1 reason=malformed_cached_hash"
     ) in caplog.text
+
+
+def test_ensure_embeddings_checkpoints_generated_chunks_before_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Generated embeddings should be upserted chunk-by-chunk before a later failure."""
+    adapter = ConsumerAdapter(
+        session_manager=_FakeSessionManager(),
+        embedding_adapter=_CheckpointThenFailEmbeddingAdapter([9.0, 8.0]),
+        sql_directory=Path("consumer/consumer_adapter/sql"),
+        local_stage_dir=tmp_path,
+        strict_validation_mode=True,
+    )
+    captured_upserts: list[dict[str, dict[str, object]]] = []
+
+    def _fake_fetch(**kwargs: object) -> dict[str, dict[str, object]]:
+        del kwargs
+        return {}
+
+    def _fake_upsert(**kwargs: object) -> int:
+        embeddings_map = kwargs.get("embeddings_map")
+        if isinstance(embeddings_map, dict):
+            captured_upserts.append(embeddings_map)
+        return len(captured_upserts)
+
+    monkeypatch.setattr(
+        "consumer.consumer_adapter.consumer.fetch_embeddings_by_reference_ids",
+        _fake_fetch,
+    )
+    monkeypatch.setattr(
+        "consumer.consumer_adapter.consumer.upsert_embeddings_by_reference_id",
+        _fake_upsert,
+    )
+
+    frame = _make_frame(
+        rows=[
+            {
+                "entity_id": "org-1",
+                "source_schema": "TENANT_A",
+                "name": "Alpha",
+                "description": "Updated profile",
+                "embedding_vector": [0.0, 0.0],
+            },
+            {
+                "entity_id": "org-2",
+                "source_schema": "TENANT_A",
+                "name": "Beta",
+                "description": "Updated profile",
+                "embedding_vector": [0.0, 0.0],
+            },
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="500 internal server error"):
+        adapter._ensure_embeddings(frame, entity_type="organization")
+
+    expected_hash = _calculate_semantic_content_hash("ORGANIZATION: Alpha - Updated profile")
+    assert captured_upserts == [
+        {
+            "org-1": {
+                "embedding": [9.0, 8.0],
+                "hash": expected_hash,
+            }
+        }
+    ]

@@ -227,6 +227,24 @@ def test_output_count_matches_input_count(monkeypatch: pytest.MonkeyPatch) -> No
     assert len(result) == len(texts)
 
 
+def test_on_chunk_complete_callback_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Adapter should pass chunk checkpoint callbacks through to the provider client."""
+    expected = [[0.1, 0.2], [0.3, 0.4]]
+    runpod = _make_provider(embeddings=expected)
+    adapter = _adapter(runpod=runpod, monkeypatch=monkeypatch, primary="runpod")
+    callback = Mock()
+
+    result = adapter.embed_batch_sync(["alpha", "beta"], on_chunk_complete=callback)
+
+    assert result == expected
+    runpod_client = runpod.get_client()
+    runpod_client.embed_batch_sync.assert_called_once_with(
+        ["alpha", "beta"],
+        batch_size=128,
+        on_chunk_complete=callback,
+    )
+
+
 def test_embed_single_returns_one_vector(monkeypatch: pytest.MonkeyPatch) -> None:
     """embed_single must return a single flat list of floats, not a nested list."""
     runpod = _make_provider(embeddings=[[0.1, 0.2, 0.3]])
