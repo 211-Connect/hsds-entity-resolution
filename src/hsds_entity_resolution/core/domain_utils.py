@@ -61,6 +61,23 @@ def extract_contact_domains(*, emails_value: object, websites_value: object) -> 
     return domains
 
 
+def extract_gov_website_registered_domains(*, websites_value: object) -> set[str]:
+    """Extract registrable ``.gov`` domains from website values only.
+
+    This intentionally ignores emails. Candidate generation uses it as a
+    conservative URL-only bypass for public-sector services, while ordinary
+    email/website domain scoring continues to use ``extract_contact_domains``.
+    """
+    domains: set[str] = set()
+    for website in clean_string_list(websites_value):
+        if "@" in website or website.startswith("mailto:"):
+            continue
+        token = _parse_domain_token(website, is_email=False)
+        if token is not None and token.registered_domain.endswith(".gov"):
+            domains.add(token.registered_domain)
+    return domains
+
+
 def domain_overlap_score(
     *,
     left_emails: object,

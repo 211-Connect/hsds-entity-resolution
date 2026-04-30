@@ -9,6 +9,7 @@ from hsds_entity_resolution.core.domain_utils import (
     domain_overlap_score,
     extract_contact_domains,
     extract_domain,
+    extract_gov_website_registered_domains,
 )
 from hsds_entity_resolution.core.taxonomy_utils import (
     clean_services_rollup,
@@ -149,6 +150,31 @@ class TestExtractContactDomains:
         assert "services.unitedway.org" in result
         assert "outreach.unitedway.org" in result
         assert len(result) == 2
+
+
+class TestExtractGovWebsiteRegisteredDomains:
+    """Unit tests for website-only public-sector candidate seeding domains."""
+
+    def test_extracts_registrable_gov_domain_from_subdomain(self) -> None:
+        result = extract_gov_website_registered_domains(
+            websites_value=["https://localhelp.healthcare.gov/search"],
+        )
+
+        assert result == {"healthcare.gov"}
+
+    def test_ignores_non_gov_website_domains(self) -> None:
+        result = extract_gov_website_registered_domains(
+            websites_value=["https://www.alpha.org/services"],
+        )
+
+        assert result == set()
+
+    def test_ignores_email_domains(self) -> None:
+        result = extract_gov_website_registered_domains(
+            websites_value=["mailto:hello@medicare.gov"],
+        )
+
+        assert result == set()
 
 
 # ===========================================================================

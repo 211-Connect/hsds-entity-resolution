@@ -178,6 +178,226 @@ def test_generate_candidates_rejects_domain_overlap_for_email_and_website() -> N
     assert result.candidate_pairs.is_empty()
 
 
+def test_generate_candidates_contact_overlap_keeps_address_below_threshold() -> None:
+    """Exact address overlap should create a candidate even below embedding threshold."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-contact-address",
+        scope_id="scope-contact-address",
+        entity_type="organization",
+    )
+    organization_entities = _address_overlap_frame(
+        ["SOURCE_A", "SOURCE_B"],
+        embedding_vectors=[[1.0, 0.0], [0.0, 1.0]],
+    )
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    row = result.candidate_pairs.row(0, named=True)
+    assert result.candidate_pairs.height == 1
+    assert row["embedding_similarity"] == 0.0
+    assert row["blocking_rule_id"] == "default_contact_overlap"
+    assert row["candidate_reason_codes"] == ["contact_overlap", "shared_address"]
+
+
+def test_generate_candidates_contact_overlap_keeps_phone_below_embedding_threshold() -> None:
+    """Exact phone overlap should create a candidate even below embedding threshold."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-contact-phone",
+        scope_id="scope-contact-phone",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[], []],
+        locations=[[], []],
+        phones=[["5550100"], ["5550100"]],
+    ).with_columns(pl.Series("embedding_vector", [[1.0, 0.0], [0.0, 1.0]]))
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    row = result.candidate_pairs.row(0, named=True)
+    assert result.candidate_pairs.height == 1
+    assert row["blocking_rule_id"] == "default_contact_overlap"
+    assert row["candidate_reason_codes"] == ["contact_overlap", "shared_phone"]
+
+
+def test_generate_candidates_contact_overlap_keeps_email_below_embedding_threshold() -> None:
+    """Exact email overlap should create a candidate even below embedding threshold."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-contact-email",
+        scope_id="scope-contact-email",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[], []],
+        locations=[[], []],
+        emails=[["hello@north.org"], ["hello@north.org"]],
+    ).with_columns(pl.Series("embedding_vector", [[1.0, 0.0], [0.0, 1.0]]))
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    row = result.candidate_pairs.row(0, named=True)
+    assert result.candidate_pairs.height == 1
+    assert row["blocking_rule_id"] == "default_contact_overlap"
+    assert row["candidate_reason_codes"] == ["contact_overlap", "shared_email"]
+
+
+def test_generate_candidates_contact_overlap_keeps_gov_website_domain_below_threshold() -> None:
+    """Shared registrable .gov website domains should bypass embedding."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-contact-gov",
+        scope_id="scope-contact-gov",
+        entity_type="service",
+    )
+    service_entities = _service_frame(
+        source_schemas=["SOURCE_A", "SOURCE_B"],
+        taxonomies=[[], []],
+        locations=[[], []],
+        websites=[
+            ["https://healthcare.gov/get-coverage/"],
+            ["https://localhelp.healthcare.gov/search"],
+        ],
+    ).with_columns(pl.Series("embedding_vector", [[1.0, 0.0], [0.0, 1.0]]))
+
+    result = generate_candidates(
+        denormalized_organization=_empty_entity_frame(),
+        denormalized_service=service_entities,
+        changed_entities=_changed_entities("service"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    row = result.candidate_pairs.row(0, named=True)
+    assert result.candidate_pairs.height == 1
+    assert row["blocking_rule_id"] == "default_contact_overlap"
+    assert row["candidate_reason_codes"] == ["contact_overlap", "shared_gov_domain"]
+
+
+def test_generate_candidates_non_gov_website_overlap_does_not_bypass_embedding() -> None:
+    """Non-.gov website overlap should not create below-threshold candidates by itself."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-contact-non-gov",
+        scope_id="scope-contact-non-gov",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[], []],
+        locations=[[], []],
+        websites=[["https://alpha.org/help"], ["https://www.alpha.org/contact"]],
+    ).with_columns(pl.Series("embedding_vector", [[1.0, 0.0], [0.0, 1.0]]))
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.is_empty()
+
+
+def test_generate_candidates_email_to_website_domain_does_not_bypass_embedding() -> None:
+    """Email-domain to website-domain overlap is scoring evidence, not a candidate bypass."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-contact-email-website",
+        scope_id="scope-contact-email-website",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[], []],
+        locations=[[], []],
+        emails=[["hello@medicare.gov"], []],
+        websites=[[], ["https://medicare.gov"]],
+    ).with_columns(pl.Series("embedding_vector", [[1.0, 0.0], [0.0, 1.0]]))
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.is_empty()
+
+
+def test_generate_candidates_location_only_does_not_bypass_embedding() -> None:
+    """City/state-only location overlap remains insufficient below embedding threshold."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-contact-location",
+        scope_id="scope-contact-location",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[], []],
+        locations=[
+            [{"city": "Chicago", "state": "IL"}],
+            [{"city": "Chicago", "state": "IL"}],
+        ],
+    ).with_columns(pl.Series("embedding_vector", [[1.0, 0.0], [0.0, 1.0]]))
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.is_empty()
+
+
+def test_generate_candidates_embedding_and_contact_routes_merge_reasons() -> None:
+    """Embedding and contact routes should produce one canonical pair with merged reasons."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-contact-merge",
+        scope_id="scope-contact-merge",
+        entity_type="organization",
+    )
+    organization_entities = _organization_frame(
+        taxonomies=[[{"code": "BD"}], [{"code": "BD"}]],
+        locations=[[], []],
+        emails=[["hello@north.org"], ["hello@north.org"]],
+    )
+
+    result = generate_candidates(
+        denormalized_organization=organization_entities,
+        denormalized_service=_empty_entity_frame(),
+        changed_entities=_changed_entities("organization"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    row = result.candidate_pairs.row(0, named=True)
+    assert result.candidate_pairs.height == 1
+    assert row["blocking_rule_id"] == "default_contact_overlap"
+    assert row["candidate_reason_codes"] == [
+        "contact_overlap",
+        "embedding_threshold",
+        "shared_domain",
+        "shared_email",
+        "shared_taxonomy",
+    ]
+
+
 def test_generate_candidates_keeps_exact_taxonomy_plus_email_overlap() -> None:
     """Exact taxonomy plus email overlap should pass the combined gate."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
@@ -258,8 +478,8 @@ def test_generate_candidates_keeps_taxonomy_plus_phone_overlap() -> None:
     assert "shared_phone" in reason_codes
 
 
-def test_generate_candidates_rejects_sibling_taxonomy_even_with_email_overlap() -> None:
-    """Sibling taxonomy matches should not pass even when another overlap exists."""
+def test_generate_candidates_keeps_sibling_taxonomy_pair_with_exact_email_overlap() -> None:
+    """Exact email overlap now creates a candidate even when taxonomy is sibling-only."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-taxonomy-sibling",
         scope_id="scope-taxonomy-sibling",
@@ -278,11 +498,14 @@ def test_generate_candidates_rejects_sibling_taxonomy_even_with_email_overlap() 
         explicit_backfill=False,
     )
 
-    assert result.candidate_pairs.is_empty()
+    row = result.candidate_pairs.row(0, named=True)
+    assert result.candidate_pairs.height == 1
+    assert row["blocking_rule_id"] == "default_contact_overlap"
+    assert row["candidate_reason_codes"] == ["contact_overlap", "shared_email"]
 
 
-def test_generate_candidates_rejects_grandparent_taxonomy_even_with_email_overlap() -> None:
-    """Grandparent-child taxonomy matches should not pass under the stricter rule."""
+def test_generate_candidates_keeps_grandparent_taxonomy_pair_with_exact_email_overlap() -> None:
+    """Exact email overlap now creates a candidate even when taxonomy is too broad."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-taxonomy-grandparent",
         scope_id="scope-taxonomy-grandparent",
@@ -301,7 +524,10 @@ def test_generate_candidates_rejects_grandparent_taxonomy_even_with_email_overla
         explicit_backfill=False,
     )
 
-    assert result.candidate_pairs.is_empty()
+    row = result.candidate_pairs.row(0, named=True)
+    assert result.candidate_pairs.height == 1
+    assert row["blocking_rule_id"] == "default_contact_overlap"
+    assert row["candidate_reason_codes"] == ["contact_overlap", "shared_email"]
 
 
 def test_generate_candidates_keeps_taxonomy_plus_domain_overlap_for_email_and_website() -> None:
@@ -432,8 +658,8 @@ def test_generate_candidates_policy_admits_exact_address_without_taxonomy() -> N
     assert "shared_address" in row["candidate_reason_codes"]
 
 
-def test_generate_candidates_cross_source_same_profile_rejects_same_source_pair() -> None:
-    """The cross-source shared-profile relation must not admit same-source pairs."""
+def test_generate_candidates_contact_overlap_keeps_same_source_even_when_policy_rejects() -> None:
+    """Default contact overlap still creates same-source candidates outside source policy."""
     config = _source_policy_config(
         relation="cross_source_same_profile",
         rule_id="address-only-cross-source-shared-profile",
@@ -448,7 +674,10 @@ def test_generate_candidates_cross_source_same_profile_rejects_same_source_pair(
         explicit_backfill=False,
     )
 
-    assert result.candidate_pairs.is_empty()
+    row = result.candidate_pairs.row(0, named=True)
+    assert result.candidate_pairs.height == 1
+    assert row["blocking_rule_id"] == "default_contact_overlap"
+    assert "shared_address" in row["candidate_reason_codes"]
 
 
 def test_generate_candidates_same_profile_still_admits_same_and_cross_source_pairs() -> None:
@@ -724,10 +953,12 @@ def _service_frame(
     source_schemas: list[str],
     taxonomies: list[object],
     locations: list[object],
+    emails: list[object] | None = None,
     phones: list[object] | None = None,
     websites: list[object] | None = None,
 ) -> pl.DataFrame:
     """Build normalized-service rows with configurable overlap payloads."""
+    resolved_emails = emails if emails is not None else [[], []]
     resolved_phones = phones if phones is not None else [[], []]
     resolved_websites = websites if websites is not None else [[], []]
     return pl.DataFrame(
@@ -737,7 +968,7 @@ def _service_frame(
             "source_schema": source_schemas,
             "name": ["Case Management", "Case Management Support"],
             "description": ["Care coordination", "Care coordination support"],
-            "emails": [[], []],
+            "emails": resolved_emails,
             "phones": resolved_phones,
             "websites": resolved_websites,
             "locations": locations,

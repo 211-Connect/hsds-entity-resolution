@@ -16,9 +16,17 @@ from hsds_entity_resolution.core.dataframe_utils import (
     clean_text_scalar,
     frame_with_schema,
 )
-from hsds_entity_resolution.core.domain_utils import extract_contact_domains
-from hsds_entity_resolution.core.score_candidates import _canonical_address_values
+from hsds_entity_resolution.core.domain_utils import (
+    extract_contact_domains,
+    extract_gov_website_registered_domains,
+)
+from hsds_entity_resolution.core.score_candidates import (
+    _canonical_address_values,
+    _first_present,
+    _normalize_address_component,
+)
 from hsds_entity_resolution.core.source_policy import (
+    DEFAULT_BLOCKING_RULE_ID,
     PairPolicyContext,
     decide_candidate_admission,
 )
@@ -40,6 +48,9 @@ _OVERLAP_CHANNEL_REASON_CODES: dict[str, str] = {
     "location": "shared_location",
     "address_exact": "shared_address",
 }
+
+_CONTACT_OVERLAP_BLOCKING_RULE_ID = "default_contact_overlap"
+_CONTACT_OVERLAP_REASON_CODE = "contact_overlap"
 
 
 @dataclass(frozen=True)
@@ -345,6 +356,14 @@ def _collect_candidate_records(
             stage=stage_name,
             detail={"candidate_pairs": len(pairs_by_key)},
         )
+    contact_generated = _collect_contact_overlap_candidates(
+        entity_rows=entity_rows,
+        entity_type=entity_type,
+        normalized_matrix=normalized_matrix,
+        id_to_idx=id_to_idx,
+        changed_ids=changed_ids,
+        pairs_by_key=pairs_by_key,
+    )
     _log_blocking_summary(
         entity_type=entity_type,
         threshold=threshold,
@@ -356,6 +375,7 @@ def _collect_candidate_records(
         first_anchor_id=diagnostics.first_anchor_id,
         first_anchor_schema=diagnostics.first_anchor_schema,
         first_anchor_samples=diagnostics.first_anchor_samples,
+        contact_overlap_generated=contact_generated,
     )
     return list(pairs_by_key.values()), BlockingOverview(
         entity_type=entity_type,
@@ -374,6 +394,165 @@ def _collect_candidate_records(
         non_taxonomy_failed=diagnostics.non_taxonomy_failed,
         both_failed=diagnostics.both_failed,
     )
+
+
+def _collect_contact_overlap_candidates(
+    *,
+    entity_rows: list[dict[str, Any]],
+    entity_type: str,
+    normalized_matrix: np.ndarray,
+    id_to_idx: dict[str, int],
+    changed_ids: set[str],
+    pairs_by_key: dict[str, dict[str, Any]],
+) -> int:
+    """Add default contact-overlap candidates regardless of embedding similarity."""
+    indexes = _build_contact_overlap_indexes(entity_rows=entity_rows)
+    generated = 0
+    seen_pair_keys: set[str] = set()
+    for anchor_id in sorted(changed_ids):
+        anchor_idx = id_to_idx.get(anchor_id)
+        if anchor_idx is None:
+            continue
+        anchor = entity_rows[anchor_idx]
+        candidate_reasons = _contact_candidate_reasons_by_id(
+            anchor=anchor,
+            indexes=indexes,
+        )
+        for candidate_id, reasons in sorted(candidate_reasons.items()):
+            if candidate_id == anchor_id:
+                continue
+            candidate_idx = id_to_idx.get(candidate_id)
+            if candidate_idx is None:
+                continue
+            candidate = entity_rows[candidate_idx]
+            pair_key = "__".join(_canonical_pair(anchor_id, candidate_id))
+            if pair_key in seen_pair_keys:
+                continue
+            seen_pair_keys.add(pair_key)
+            similarity = float(normalized_matrix[candidate_idx] @ normalized_matrix[anchor_idx])
+            record = _to_candidate_record(
+                anchor=anchor,
+                candidate=candidate,
+                similarity=similarity,
+                overlap_reasons=sorted(reasons),
+                blocking_rule_id=_CONTACT_OVERLAP_BLOCKING_RULE_ID,
+                include_embedding_reason=False,
+            )
+            if _merge_candidate_record(pairs_by_key=pairs_by_key, record=record):
+                generated += 1
+    if generated:
+        get_dagster_logger().info(
+            "ℹ️ contact_overlap_candidates entity_type=%s generated=%d",
+            entity_type,
+            generated,
+        )
+    return generated
+
+
+def _build_contact_overlap_indexes(
+    *,
+    entity_rows: list[dict[str, Any]],
+) -> dict[str, dict[str, set[str]]]:
+    """Build inverted indexes for default contact-overlap candidate seeding."""
+    indexes: dict[str, dict[str, set[str]]] = {
+        "address": {},
+        "phone": {},
+        "email": {},
+        "gov_domain": {},
+    }
+    for row in entity_rows:
+        entity_id = str(row["entity_id"])
+        for address in set(_canonical_contact_address_values(row.get("locations"))):
+            indexes["address"].setdefault(address, set()).add(entity_id)
+        for phone in set(clean_string_list(row.get("phones"))):
+            indexes["phone"].setdefault(phone, set()).add(entity_id)
+        for email in set(clean_string_list(row.get("emails"))):
+            indexes["email"].setdefault(email, set()).add(entity_id)
+        for domain in extract_gov_website_registered_domains(websites_value=row.get("websites")):
+            indexes["gov_domain"].setdefault(domain, set()).add(entity_id)
+    return indexes
+
+
+def _contact_candidate_reasons_by_id(
+    *,
+    anchor: dict[str, Any],
+    indexes: dict[str, dict[str, set[str]]],
+) -> dict[str, set[str]]:
+    """Return contact-overlap reason codes keyed by candidate entity id."""
+    candidate_reasons: dict[str, set[str]] = {}
+
+    def add_candidates(values: set[str], index_name: str, reason_code: str) -> None:
+        for value in values:
+            for candidate_id in indexes[index_name].get(value, set()):
+                candidate_reasons.setdefault(candidate_id, set()).update(
+                    {_CONTACT_OVERLAP_REASON_CODE, reason_code}
+                )
+
+    add_candidates(
+        set(_canonical_contact_address_values(anchor.get("locations"))),
+        "address",
+        "shared_address",
+    )
+    add_candidates(set(clean_string_list(anchor.get("phones"))), "phone", "shared_phone")
+    add_candidates(set(clean_string_list(anchor.get("emails"))), "email", "shared_email")
+    add_candidates(
+        extract_gov_website_registered_domains(websites_value=anchor.get("websites")),
+        "gov_domain",
+        "shared_gov_domain",
+    )
+    return candidate_reasons
+
+
+def _merge_candidate_record(
+    *,
+    pairs_by_key: dict[str, dict[str, Any]],
+    record: dict[str, Any],
+) -> bool:
+    """Merge a contact-generated record into canonical candidate records."""
+    existing = pairs_by_key.get(record["pair_key"])
+    if existing is None:
+        pairs_by_key[record["pair_key"]] = record
+        return True
+    existing["candidate_reason_codes"] = sorted(
+        set(existing.get("candidate_reason_codes") or []).union(
+            set(record.get("candidate_reason_codes") or [])
+        )
+    )
+    existing["embedding_similarity"] = max(
+        float(existing.get("embedding_similarity") or 0.0),
+        float(record.get("embedding_similarity") or 0.0),
+    )
+    if str(existing.get("blocking_rule_id") or "") in {
+        "",
+        "unknown",
+        DEFAULT_BLOCKING_RULE_ID,
+    }:
+        existing["blocking_rule_id"] = record["blocking_rule_id"]
+    return False
+
+
+def _canonical_contact_address_values(locations_value: Any) -> list[str]:
+    """Build exact-address tokens for candidate bypass, requiring street evidence."""
+    if not isinstance(locations_value, list):
+        return []
+    output: list[str] = []
+    for location in locations_value:
+        if not isinstance(location, dict):
+            continue
+        street = _normalize_address_component(
+            _first_present(location, ("address_1", "address1", "line1", "street", "address"))
+        )
+        if not street:
+            continue
+        city = _normalize_address_component(_first_present(location, ("city",)))
+        state = _normalize_address_component(_first_present(location, ("state",)))
+        postal = _normalize_address_component(
+            _first_present(location, ("postal_code", "postal", "zip", "zipcode"))
+        )
+        parts = [part for part in (street, city, state, postal) if part]
+        if parts:
+            output.append("|".join(parts))
+    return clean_string_list(output)
 
 
 def _empty_blocking_overview(*, entity_type: str) -> BlockingOverview:
@@ -701,6 +880,7 @@ def _log_blocking_summary(
     first_anchor_id: str | None,
     first_anchor_schema: str | None,
     first_anchor_samples: list[dict[str, Any]],
+    contact_overlap_generated: int,
 ) -> None:
     """Emit a single DEBUG summary of the full blocking pass — never called inside a loop."""
     _log = get_dagster_logger()
@@ -721,6 +901,7 @@ def _log_blocking_summary(
     _log.debug(
         "🧮 blocking_summary entity_type=%s threshold=%s"
         " above_threshold=%d overlap_blocked=%d pairs_kept=%d"
+        " contact_overlap_generated=%d"
         " channel_hits=[%s]\n"
         "🎯 first_anchor=%s schema=%s top_%d_candidates:\n%s",
         entity_type,
@@ -728,6 +909,7 @@ def _log_blocking_summary(
         above_threshold,
         overlap_blocked,
         pairs_kept,
+        contact_overlap_generated,
         channel_hits_str,
         first_anchor_id or "none",
         first_anchor_schema or "?",
@@ -909,10 +1091,12 @@ def _to_candidate_record(
     similarity: float,
     overlap_reasons: list[str],
     blocking_rule_id: str,
+    include_embedding_reason: bool = True,
 ) -> dict[str, Any]:
     """Build one canonical candidate record with provenance fields."""
     entity_a_id, entity_b_id = _canonical_pair(anchor["entity_id"], candidate["entity_id"])
-    reason_codes = sorted(set(["embedding_threshold", *overlap_reasons]))
+    base_reasons = ["embedding_threshold"] if include_embedding_reason else []
+    reason_codes = sorted(set([*base_reasons, *overlap_reasons]))
     pair_key = f"{entity_a_id}__{entity_b_id}"
     source_schema_a = (
         anchor["source_schema"]
