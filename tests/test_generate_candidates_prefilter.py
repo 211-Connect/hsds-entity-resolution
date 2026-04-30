@@ -784,6 +784,41 @@ def test_generate_candidates_service_policy_admits_taxonomy_plus_phone_cross_sou
     assert "shared_phone" in row["candidate_reason_codes"]
 
 
+def test_generate_candidates_service_policy_admits_same_address_semantic_pair() -> None:
+    """WellSky-style same-address service pairs can admit without taxonomy overlap."""
+    config = _source_policy_config(
+        relation="same_profile",
+        rule_id="il211_wellsky_service_same_address_semantic",
+        entity_type="service",
+        all_of=["address_exact"],
+        min_embedding_similarity=0.76,
+    )
+    service_entities = _service_frame(
+        source_schemas=["SOURCE_A", "SOURCE_A"],
+        phones=[[], []],
+        websites=[[], []],
+        locations=[
+            [{"address_1": "123 Main St", "city": "Chicago", "state": "IL"}],
+            [{"address_1": "123 Main Street", "city": "Chicago", "state": "IL"}],
+        ],
+        taxonomies=[[{"code": "LJ-2000.6500"}], [{"code": "BM-6500.1500-100"}]],
+    ).with_columns(pl.Series("embedding_vector", [[1.0, 0.0], [0.80, 0.60]]))
+
+    result = generate_candidates(
+        denormalized_organization=_empty_entity_frame(),
+        denormalized_service=service_entities,
+        changed_entities=_changed_entities("service"),
+        config=config,
+        explicit_backfill=False,
+    )
+
+    assert result.candidate_pairs.height == 1
+    row = result.candidate_pairs.row(0, named=True)
+    assert row["blocking_rule_id"] == "il211_wellsky_service_same_address_semantic"
+    assert "shared_address" in row["candidate_reason_codes"]
+    assert "shared_taxonomy" not in row["candidate_reason_codes"]
+
+
 def test_generate_candidates_service_policy_admits_taxonomy_plus_domain_cross_source_pair() -> None:
     """WellSky cross-source service pairs can be admitted with taxonomy plus website overlap."""
     config = _source_policy_config(

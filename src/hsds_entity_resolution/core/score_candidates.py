@@ -43,6 +43,7 @@ from hsds_entity_resolution.types.frames import PAIR_REASONS_SCHEMA, SCORED_PAIR
 _ADDRESS_REASON_MATCH_TYPE = "shared_address"
 _DOMAIN_REASON_MATCH_TYPE = "shared_domain"
 _TAXONOMY_REASON_MATCH_TYPE = "shared_taxonomy"
+_DIRECT_TAXONOMY_EXEMPTION_SCORE = 0.7
 
 
 @dataclass(frozen=True)
@@ -379,6 +380,12 @@ def _finalize_pair(
         maybe_threshold=policy.maybe_threshold,
         low_maybe_threshold=policy.low_maybe_threshold,
     )
+    pair_outcome = _apply_embedding_floor_policy(
+        pair_outcome=pair_outcome,
+        embedding_similarity=float(candidate["embedding_similarity"]),
+        reasons=[*record.det_reasons, *record.nlp_reasons],
+        policy=policy,
+    )
     predicted_duplicate = pair_outcome == "duplicate"
     review_eligible = is_review_eligible_outcome(pair_outcome)
     reasons = [*record.det_reasons, *record.nlp_reasons]
@@ -416,6 +423,61 @@ def _finalize_pair(
         "suppressed_signals": policy.suppressed_signals,
     }
     return ScoredPairRecord(row=row, reasons=reasons)
+
+
+def _apply_embedding_floor_policy(
+    *,
+    pair_outcome: str,
+    embedding_similarity: float,
+    reasons: list[dict[str, Any]],
+    policy: EffectiveScoringPolicy,
+) -> str:
+    """Apply source-policy embedding floors to review and duplicate outcomes."""
+    overrides = policy.feature_overrides
+    if _has_embedding_floor_exemption(
+        reasons=reasons,
+        exempt_signals=overrides.embedding_floor_exempt_signals,
+    ):
+        return pair_outcome
+    if (
+        overrides.min_review_embedding_similarity is not None
+        and is_review_eligible_outcome(pair_outcome)
+        and embedding_similarity < overrides.min_review_embedding_similarity
+    ):
+        return "below_maybe"
+    if (
+        overrides.min_duplicate_embedding_similarity is not None
+        and pair_outcome == "duplicate"
+        and embedding_similarity < overrides.min_duplicate_embedding_similarity
+    ):
+        return "maybe"
+    return pair_outcome
+
+
+def _has_embedding_floor_exemption(
+    *,
+    reasons: list[dict[str, Any]],
+    exempt_signals: list[str],
+) -> bool:
+    """Return true when strong configured evidence bypasses embedding floors."""
+    if not exempt_signals:
+        return False
+    exempt = set(exempt_signals)
+    for reason in reasons:
+        match_type = str(reason.get("match_type") or "")
+        if match_type not in exempt:
+            continue
+        if match_type != _TAXONOMY_REASON_MATCH_TYPE:
+            return True
+        # Only exact or direct parent-child taxonomy evidence bypasses the
+        # WellSky semantic floor. Shallow same-root HSIS overlaps are not enough.
+        similarity_score = reason.get("similarity_score")
+        if (
+            similarity_score is not None
+            and float(similarity_score) >= _DIRECT_TAXONOMY_EXEMPTION_SCORE
+        ):
+            return True
+    return False
 
 
 def _deterministic_score(
@@ -1028,7 +1090,9 @@ def log_score_diagnostics(
     merged shard results can emit a single consolidated diagnostic log
     rather than per-shard fragments.
     """
-    _log_signal_band_diagnostics(scored_pairs=scored_pairs, pair_reasons=pair_reasons, config=config)
+    _log_signal_band_diagnostics(
+        scored_pairs=scored_pairs, pair_reasons=pair_reasons, config=config
+    )
     _log_shadow_confidence_diagnostics(scored_pairs=scored_pairs, pair_reasons=pair_reasons)
 
 

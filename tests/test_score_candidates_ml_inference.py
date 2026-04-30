@@ -1039,7 +1039,7 @@ def test_score_candidates_source_policy_overrides_weights_and_thresholds() -> No
     assert row["pair_outcome"] == "duplicate"
 
 
-def test_score_candidates_source_policy_rule_with_any_relation_applies_cross_profile_org_pair() -> None:
+def test_score_candidates_source_policy_any_relation_applies_cross_profile_org_pair() -> None:
     """Organization pair rules with `any` relation should apply across source profiles."""
     payload = _config_with_ml_disabled().model_dump()
     payload["source_policy"] = {
@@ -1086,6 +1086,70 @@ def test_score_candidates_source_policy_rule_with_any_relation_applies_cross_pro
     row = result.scored_pairs.row(0, named=True)
     assert row["policy_rule_id"] == "il211-org-any"
     assert row["deterministic_section_score"] == pytest.approx(1.0)
+
+
+def test_score_candidates_embedding_floor_suppresses_below_floor_review_pair() -> None:
+    """Below-floor WellSky contact pairs should be scored but not review eligible."""
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_wellsky_service_candidate_pairs(embedding_similarity=0.75),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=_wellsky_reconstruction_service_rows(shared_taxonomy=False),
+        config=_wellsky_reconstruction_config(),
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    assert row["policy_rule_id"] == "wellsky-reconstruction"
+    assert row["final_score"] >= row["effective_low_maybe_threshold"]
+    assert row["pair_outcome"] == "below_maybe"
+    assert row["predicted_duplicate"] is False
+    assert row["review_eligible"] is False
+
+
+def test_score_candidates_embedding_floor_keeps_mid_similarity_pair_review_eligible() -> None:
+    """WellSky same-address semantic pairs above 0.76 should remain review reachable."""
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_wellsky_service_candidate_pairs(embedding_similarity=0.80),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=_wellsky_reconstruction_service_rows(shared_taxonomy=False),
+        config=_wellsky_reconstruction_config(),
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    assert row["final_score"] >= row["effective_maybe_threshold"]
+    assert row["pair_outcome"] == "maybe"
+    assert row["predicted_duplicate"] is False
+    assert row["review_eligible"] is True
+
+
+def test_score_candidates_embedding_floor_allows_high_similarity_duplicate() -> None:
+    """WellSky same-address semantic pairs above 0.90 can be predicted duplicates."""
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_wellsky_service_candidate_pairs(embedding_similarity=0.91),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=_wellsky_reconstruction_service_rows(shared_taxonomy=False),
+        config=_wellsky_reconstruction_config(),
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    assert row["pair_outcome"] == "duplicate"
+    assert row["predicted_duplicate"] is True
+    assert row["review_eligible"] is True
+
+
+def test_score_candidates_taxonomy_exemption_bypasses_embedding_floor() -> None:
+    """Exact/parent taxonomy evidence can bypass the WellSky semantic floor."""
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_wellsky_service_candidate_pairs(embedding_similarity=0.50),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=_wellsky_reconstruction_service_rows(shared_taxonomy=True),
+        config=_wellsky_reconstruction_config(),
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    match_types = result.pair_reasons.get_column("match_type").to_list()
+    assert "shared_taxonomy" in match_types
+    assert row["pair_outcome"] == "duplicate"
+    assert row["review_eligible"] is True
 
 
 def _config_with_nlp_overrides(**nlp_overrides: float | str) -> EntityResolutionRunConfig:
@@ -1269,6 +1333,64 @@ def _service_candidate_pairs() -> pl.DataFrame:
     )
 
 
+def _wellsky_service_candidate_pairs(*, embedding_similarity: float) -> pl.DataFrame:
+    """Return one WellSky service candidate row for reconstruction policy tests."""
+    return pl.DataFrame(
+        {
+            "pair_key": ["svc-a__svc-b"],
+            "entity_a_id": ["svc-a"],
+            "entity_b_id": ["svc-b"],
+            "entity_type": ["service"],
+            "embedding_similarity": [embedding_similarity],
+            "candidate_reason_codes": [["contact_overlap", "shared_address"]],
+            "source_schema_a": ["211HSIS"],
+            "source_schema_b": ["211HSIS"],
+            "blocking_rule_id": ["default_contact_overlap"],
+        }
+    )
+
+
+def _wellsky_reconstruction_config() -> EntityResolutionRunConfig:
+    """Return a compact source-policy config that exercises embedding floor gates."""
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-wellsky",
+        scope_id="scope-wellsky",
+        entity_type="service",
+    ).model_dump()
+    payload["scoring"]["ml"]["ml_enabled"] = False
+    payload["source_policy"] = {
+        "source_profiles": {"WELLSKY": {"source_schemas": ["211HSIS"]}},
+        "admission_rules": [],
+        "pair_rules": [
+            {
+                "rule_id": "wellsky-reconstruction",
+                "entity_types": ["service"],
+                "source_relation": "same_profile",
+                "source_profiles": ["WELLSKY"],
+                "feature_overrides": {
+                    "deterministic": {
+                        "shared_email": {"enabled": True, "weight": 0.10},
+                        "shared_phone": {"enabled": True, "weight": 0.15},
+                        "shared_domain": {"enabled": True, "weight": 0.05},
+                        "shared_taxonomy": {"enabled": True, "weight": 0.05},
+                        "shared_address": {"enabled": True, "weight": 0.30},
+                    },
+                    "deterministic_section_weight": 1.0,
+                    "nlp_section_weight": 0.0,
+                    "ml_section_weight": 0.0,
+                    "duplicate_threshold": 0.86,
+                    "maybe_threshold": 0.74,
+                    "low_maybe_threshold": 0.60,
+                    "min_review_embedding_similarity": 0.76,
+                    "min_duplicate_embedding_similarity": 0.90,
+                    "embedding_floor_exempt_signals": ["shared_taxonomy"],
+                },
+            }
+        ],
+    }
+    return EntityResolutionRunConfig.model_validate(payload)
+
+
 def _normalized_service_rows(*, include_overlap: bool) -> pl.DataFrame:
     """Return normalized service rows with all lookup columns required for scoring."""
     emails = [["hello@alpha.org"], ["hello@alpha.org"]] if include_overlap else [[], []]
@@ -1321,4 +1443,26 @@ def _normalized_service_rows(*, include_overlap: bool) -> pl.DataFrame:
             "embedding_vector": [[0.9, 0.1], [0.91, 0.09]],
             "source_schema": ["211HSIS", "211HSIS"],
         }
+    )
+
+
+def _wellsky_reconstruction_service_rows(*, shared_taxonomy: bool) -> pl.DataFrame:
+    """Return service rows with same address/contact and configurable taxonomy overlap."""
+    taxonomies = (
+        [[{"code": "LJ-2000.6500"}], [{"code": "LJ-2000.6500"}]]
+        if shared_taxonomy
+        else [[{"code": "LJ-2000.6500"}], [{"code": "BM-6500.1500-100"}]]
+    )
+    return _normalized_service_rows(include_overlap=True).with_columns(
+        pl.Series("name", ["Pregnancy Counseling", "Baby Clothing"]),
+        pl.Series(
+            "description",
+            [
+                "Birthright provides non-judgmental support.",
+                "Birthright provides non-judgmental support.",
+            ],
+        ),
+        pl.Series("taxonomies", taxonomies),
+        pl.Series("services_rollup", [[], []]),
+        pl.Series("source_schema", ["211HSIS", "211HSIS"]),
     )

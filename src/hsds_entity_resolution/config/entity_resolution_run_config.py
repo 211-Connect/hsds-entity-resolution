@@ -160,6 +160,9 @@ class FeatureOverrideConfig(BaseStrictModel):
     maybe_threshold: float | None = Field(default=None, ge=0.3, le=0.95)
     low_maybe_threshold: float | None = Field(default=None, ge=0.2, le=0.9)
     ml_gate_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_review_embedding_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_duplicate_embedding_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    embedding_floor_exempt_signals: list[str] = Field(default_factory=list)
     suppressions: list[SignalSuppressionConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -178,6 +181,15 @@ class FeatureOverrideConfig(BaseStrictModel):
                 f"{non_deterministic!r}"
             )
             raise ValueError(message)
+        unsupported_exemptions = sorted(
+            set(self.embedding_floor_exempt_signals).difference(_SUPPORTED_SIGNAL_NAMES)
+        )
+        if unsupported_exemptions:
+            message = (
+                "Unsupported embedding floor exemption signal names: "
+                f"{unsupported_exemptions!r}"
+            )
+            raise ValueError(message)
         if (
             self.duplicate_threshold is not None
             and self.maybe_threshold is not None
@@ -191,6 +203,16 @@ class FeatureOverrideConfig(BaseStrictModel):
             and self.maybe_threshold <= self.low_maybe_threshold
         ):
             message = "maybe_threshold must be strictly greater than low_maybe_threshold"
+            raise ValueError(message)
+        if (
+            self.min_review_embedding_similarity is not None
+            and self.min_duplicate_embedding_similarity is not None
+            and self.min_duplicate_embedding_similarity < self.min_review_embedding_similarity
+        ):
+            message = (
+                "min_duplicate_embedding_similarity must be greater than or equal to "
+                "min_review_embedding_similarity"
+            )
             raise ValueError(message)
         section_values = [
             self.deterministic_section_weight,

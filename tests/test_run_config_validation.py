@@ -81,6 +81,81 @@ def test_source_policy_rejects_unknown_signal_suppression() -> None:
         _ = EntityResolutionRunConfig.model_validate(payload)
 
 
+def test_source_policy_accepts_embedding_floor_overrides() -> None:
+    """Pair rules can define embedding floors and explicit signal exemptions."""
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team",
+        scope_id="scope",
+        entity_type="service",
+    ).model_dump()
+    payload["source_policy"]["source_profiles"] = {
+        "PROFILE_SHARED": {"source_schemas": ["SOURCE_A"]}
+    }
+    payload["source_policy"]["pair_rules"] = [
+        {
+            "rule_id": "embedding-floor",
+            "entity_types": ["service"],
+            "source_relation": "same_profile",
+            "source_profiles": ["PROFILE_SHARED"],
+            "feature_overrides": {
+                "min_review_embedding_similarity": 0.76,
+                "min_duplicate_embedding_similarity": 0.90,
+                "embedding_floor_exempt_signals": ["shared_taxonomy"],
+            },
+        }
+    ]
+
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    overrides = config.source_policy.pair_rules[0].feature_overrides
+    assert overrides.min_review_embedding_similarity == 0.76
+    assert overrides.min_duplicate_embedding_similarity == 0.90
+    assert overrides.embedding_floor_exempt_signals == ["shared_taxonomy"]
+
+
+def test_source_policy_rejects_unknown_embedding_floor_exemption() -> None:
+    """Embedding floor exemptions must use known evidence signal names."""
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team",
+        scope_id="scope",
+        entity_type="service",
+    ).model_dump()
+    payload["source_policy"]["pair_rules"] = [
+        {
+            "rule_id": "bad-exemption",
+            "entity_types": ["service"],
+            "feature_overrides": {
+                "embedding_floor_exempt_signals": ["private_source_fact"],
+            },
+        }
+    ]
+
+    with pytest.raises(ValueError, match="Unsupported embedding floor exemption"):
+        _ = EntityResolutionRunConfig.model_validate(payload)
+
+
+def test_source_policy_rejects_duplicate_floor_below_review_floor() -> None:
+    """Duplicate embedding floor cannot be less strict than review embedding floor."""
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team",
+        scope_id="scope",
+        entity_type="service",
+    ).model_dump()
+    payload["source_policy"]["pair_rules"] = [
+        {
+            "rule_id": "bad-floor-order",
+            "entity_types": ["service"],
+            "feature_overrides": {
+                "min_review_embedding_similarity": 0.76,
+                "min_duplicate_embedding_similarity": 0.70,
+            },
+        }
+    ]
+
+    with pytest.raises(ValueError, match="min_duplicate_embedding_similarity"):
+        _ = EntityResolutionRunConfig.model_validate(payload)
+
+
 def test_source_policy_accepts_cross_source_same_profile_relation() -> None:
     """Source policy supports cross-source admission within a shared abstract profile."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
