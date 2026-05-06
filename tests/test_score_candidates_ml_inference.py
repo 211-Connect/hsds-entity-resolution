@@ -1152,6 +1152,101 @@ def test_score_candidates_taxonomy_exemption_bypasses_embedding_floor() -> None:
     assert row["review_eligible"] is True
 
 
+def test_score_candidates_exact_phone_overlap_is_binary_when_one_side_has_many_phones() -> None:
+    """Any exact shared phone should be strong evidence, not diluted by alternate phones."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-phone",
+        scope_id="scope-phone",
+        entity_type="service",
+    )
+    payload = config.model_dump()
+    payload["scoring"]["ml"]["ml_enabled"] = False
+    config = EntityResolutionRunConfig.model_validate(payload)
+
+    rows = _normalized_service_rows(include_overlap=False).with_columns(
+        pl.Series("name", ["Transit Passes", "Transit Passes"]),
+        pl.Series("phones", [["312-913-3110"], ["312-663-4357", "312-913-3110"]]),
+    )
+
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_service_candidate_pairs(),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=rows,
+        config=config,
+    )
+
+    phone_reason = (
+        result.pair_reasons.filter(pl.col("match_type") == "shared_phone")
+        .row(0, named=True)
+    )
+    assert phone_reason["raw_contribution"] == pytest.approx(1.0)
+
+
+def test_score_candidates_v5_promotes_wellsky_address_taxonomy_name_pair() -> None:
+    """Direct taxonomy plus exact address should lift strong cross-source WellSky pairs."""
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_source_pair_candidates(
+            source_schema_a="dupagec211",
+            source_schema_b="lakecou211",
+            embedding_similarity=0.785,
+        ),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=_v5_identity_service_rows(
+            source_schema_a="dupagec211",
+            source_schema_b="lakecou211",
+            name_a="Child Care Expense Assistance",
+            name_b="Child Care Expense Assistance",
+            org_a="YWCA of Metropolitan Chicago Patterson and McDaniel Family Center",
+            org_b="YWCA METROPOLITAN CHICAGO",
+            phones_a=[],
+            phones_b=[],
+        ),
+        config=_v5_identity_config(),
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    match_types = set(result.pair_reasons.get_column("match_type").to_list())
+    assert row["policy_rule_id"] == "v5-wellsky"
+    assert row["final_score"] >= row["effective_maybe_threshold"]
+    assert "address_plus_taxonomy" in match_types
+    assert "address_plus_taxonomy_plus_contact" in match_types
+
+
+def test_score_candidates_v5_promotes_cross_system_address_taxonomy_provider_pair() -> None:
+    """WellSky/iCarol pairs should use direct taxonomy and provider-name convergence."""
+    result = score_candidates_module.score_candidates(
+        candidate_pairs=_source_pair_candidates(
+            source_schema_a="ne211_v2",
+            source_schema_b="uwgsl211",
+            embedding_similarity=0.873,
+        ),
+        denormalized_organization=pl.DataFrame(),
+        denormalized_service=_v5_identity_service_rows(
+            source_schema_a="ne211_v2",
+            source_schema_b="uwgsl211",
+            name_a="Better Business Bureau",
+            name_b="Better Business Bureaus",
+            org_a="Better Business Bureau of Eastern Missouri and Southern Illinois",
+            org_b=(
+                "BETTER BUSINESS BUREAU SERVING EASTERN AND SOUTHWEST MISSOURI "
+                "AND SOUTHERN ILLINOIS"
+            ),
+            phones_a=["314-645-2666"],
+            phones_b=["314-645-0606", "314-645-2666"],
+        ),
+        config=_v5_identity_config(),
+    )
+
+    row = result.scored_pairs.row(0, named=True)
+    match_types = set(result.pair_reasons.get_column("match_type").to_list())
+    assert row["policy_rule_id"] == "v5-cross-system"
+    assert row["final_score"] >= row["effective_maybe_threshold"]
+    assert "shared_taxonomy" in match_types
+    assert "address_plus_taxonomy" in match_types
+    assert "address_plus_taxonomy_plus_contact" in match_types
+    assert "organization_name_similarity" in match_types
+
+
 def _config_with_nlp_overrides(**nlp_overrides: float | str) -> EntityResolutionRunConfig:
     """Return default run config with NLP-specific override values."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
@@ -1350,6 +1445,28 @@ def _wellsky_service_candidate_pairs(*, embedding_similarity: float) -> pl.DataF
     )
 
 
+def _source_pair_candidates(
+    *,
+    source_schema_a: str,
+    source_schema_b: str,
+    embedding_similarity: float,
+) -> pl.DataFrame:
+    """Return one source-aware service candidate row."""
+    return pl.DataFrame(
+        {
+            "pair_key": ["svc-a__svc-b"],
+            "entity_a_id": ["svc-a"],
+            "entity_b_id": ["svc-b"],
+            "entity_type": ["service"],
+            "embedding_similarity": [embedding_similarity],
+            "candidate_reason_codes": [["contact_overlap", "shared_address"]],
+            "source_schema_a": [source_schema_a],
+            "source_schema_b": [source_schema_b],
+            "blocking_rule_id": ["default_contact_overlap"],
+        }
+    )
+
+
 def _wellsky_reconstruction_config() -> EntityResolutionRunConfig:
     """Return a compact source-policy config that exercises embedding floor gates."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
@@ -1386,6 +1503,85 @@ def _wellsky_reconstruction_config() -> EntityResolutionRunConfig:
                     "embedding_floor_exempt_signals": ["shared_taxonomy"],
                 },
             }
+        ],
+    }
+    return EntityResolutionRunConfig.model_validate(payload)
+
+
+def _v5_identity_config() -> EntityResolutionRunConfig:
+    """Return compact v5 source-policy config for identity-convergence scoring tests."""
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team-v5",
+        scope_id="scope-v5",
+        entity_type="service",
+    ).model_dump()
+    payload["scoring"]["ml"]["ml_enabled"] = False
+    payload["source_policy"] = {
+        "source_profiles": {
+            "wellsky": {"source_schemas": ["dupagec211", "lakecou211", "uwgsl211"]},
+            "icarol": {"source_schemas": ["ne211_v2", "metroch211"]},
+        },
+        "admission_rules": [],
+        "pair_rules": [
+            {
+                "rule_id": "v5-cross-system",
+                "entity_types": ["service"],
+                "source_relation": "cross_profile",
+                "source_profiles": ["wellsky", "icarol"],
+                "feature_overrides": {
+                    "deterministic": {
+                        "shared_taxonomy": {"enabled": True, "weight": 0.10},
+                        "shared_address": {"enabled": True, "weight": 0.40},
+                        "shared_phone": {"enabled": True, "weight": 0.30},
+                        "shared_email": {"enabled": True, "weight": 0.20},
+                        "shared_domain": {"enabled": True, "weight": 0.10},
+                        "address_plus_taxonomy": {"enabled": True, "weight": 0.20},
+                        "address_plus_taxonomy_plus_contact": {
+                            "enabled": True,
+                            "weight": 0.10,
+                        },
+                        "organization_name_similarity": {"enabled": True, "weight": 0.15},
+                    },
+                    "deterministic_section_weight": 0.70,
+                    "nlp_section_weight": 0.20,
+                    "ml_section_weight": 0.10,
+                    "ml_gate_threshold": 0.20,
+                    "duplicate_threshold": 0.72,
+                    "maybe_threshold": 0.62,
+                    "low_maybe_threshold": 0.20,
+                },
+            },
+            {
+                "rule_id": "v5-wellsky",
+                "entity_types": ["service"],
+                "source_relation": "same_profile",
+                "source_profiles": ["wellsky"],
+                "feature_overrides": {
+                    "deterministic": {
+                        "shared_taxonomy": {"enabled": True, "weight": 0.05},
+                        "shared_address": {"enabled": True, "weight": 0.30},
+                        "shared_phone": {"enabled": True, "weight": 0.15},
+                        "shared_email": {"enabled": True, "weight": 0.10},
+                        "shared_domain": {"enabled": True, "weight": 0.05},
+                        "address_plus_taxonomy": {"enabled": True, "weight": 0.20},
+                        "address_plus_taxonomy_plus_contact": {
+                            "enabled": True,
+                            "weight": 0.10,
+                        },
+                        "organization_name_similarity": {"enabled": True, "weight": 0.10},
+                    },
+                    "deterministic_section_weight": 0.30,
+                    "nlp_section_weight": 0.10,
+                    "ml_section_weight": 0.60,
+                    "ml_gate_threshold": 0.20,
+                    "duplicate_threshold": 0.86,
+                    "maybe_threshold": 0.74,
+                    "low_maybe_threshold": 0.60,
+                    "min_review_embedding_similarity": 0.76,
+                    "min_duplicate_embedding_similarity": 0.90,
+                    "embedding_floor_exempt_signals": ["shared_taxonomy"],
+                },
+            },
         ],
     }
     return EntityResolutionRunConfig.model_validate(payload)
@@ -1442,6 +1638,57 @@ def _normalized_service_rows(*, include_overlap: bool) -> pl.DataFrame:
             "organization_original_id": [None, None],
             "embedding_vector": [[0.9, 0.1], [0.91, 0.09]],
             "source_schema": ["211HSIS", "211HSIS"],
+        }
+    )
+
+
+def _v5_identity_service_rows(
+    *,
+    source_schema_a: str,
+    source_schema_b: str,
+    name_a: str,
+    name_b: str,
+    org_a: str,
+    org_b: str,
+    phones_a: list[str],
+    phones_b: list[str],
+) -> pl.DataFrame:
+    """Return two service rows with shared address/domain/taxonomy for v5 tests."""
+    return pl.DataFrame(
+        {
+            "entity_id": ["svc-a", "svc-b"],
+            "entity_type": ["service", "service"],
+            "name": [name_a, name_b],
+            "description": ["Source description A", "Source description B"],
+            "emails": [[], []],
+            "phones": [phones_a, phones_b],
+            "websites": [["https://www.bbb.org/stlouis"], ["https://www.bbb.org/stlouis"]],
+            "locations": [
+                [
+                    {
+                        "address_1": "211 North Broadway",
+                        "city": "Saint Louis",
+                        "state": "MO",
+                        "postal_code": "63102",
+                    }
+                ],
+                [
+                    {
+                        "address_1": "211 North Broadway",
+                        "city": "Saint Louis",
+                        "state": "MO",
+                        "postal_code": "63102",
+                    }
+                ],
+            ],
+            "taxonomies": [[{"code": "TJ-1800.1500"}], [{"code": "TJ-1800.1500"}]],
+            "identifiers": [[], []],
+            "services_rollup": [[], []],
+            "organization_name": [org_a, org_b],
+            "organization_id": ["org-a", "org-b"],
+            "organization_original_id": [None, None],
+            "embedding_vector": [[0.9, 0.1], [0.91, 0.09]],
+            "source_schema": [source_schema_a, source_schema_b],
         }
     )
 

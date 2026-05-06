@@ -1,7 +1,7 @@
 [project]
 name = "hsds-record-matcher"
 requires-python = ">=3.10,<3.15"
-version = "1.0.3"
+version = "1.1.0"
 description = "Reusable Dagster component package for HSDS entity resolution workflows."
 readme = "README.pypi.md"
 keywords = ["dagster", "entity-resolution", "hsds", "deduplication", "dbt"]

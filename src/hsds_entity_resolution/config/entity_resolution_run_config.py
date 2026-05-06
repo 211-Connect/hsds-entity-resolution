@@ -23,8 +23,11 @@ _SUPPORTED_SIGNAL_NAMES = {
     "shared_domain",
     "shared_taxonomy",
     "shared_address",
+    "address_plus_taxonomy",
+    "address_plus_taxonomy_plus_contact",
     "shared_identifier",
     "name_similarity",
+    "organization_name_similarity",
     "ml_score",
 }
 
@@ -116,7 +119,16 @@ class DeterministicConfig(BaseStrictModel):
     shared_domain: DeterministicSignalConfig
     shared_taxonomy: DeterministicSignalConfig
     shared_address: DeterministicSignalConfig
+    address_plus_taxonomy: DeterministicSignalConfig = Field(
+        default_factory=lambda: DeterministicSignalConfig(enabled=False, weight=0.0)
+    )
+    address_plus_taxonomy_plus_contact: DeterministicSignalConfig = Field(
+        default_factory=lambda: DeterministicSignalConfig(enabled=False, weight=0.0)
+    )
     shared_identifier: DeterministicSignalConfig
+    organization_name_similarity: DeterministicSignalConfig = Field(
+        default_factory=lambda: DeterministicSignalConfig(enabled=False, weight=0.0)
+    )
 
 
 class NlpConfig(BaseStrictModel):
@@ -163,6 +175,7 @@ class FeatureOverrideConfig(BaseStrictModel):
     min_review_embedding_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
     min_duplicate_embedding_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
     embedding_floor_exempt_signals: list[str] = Field(default_factory=list)
+    review_on_signals: list[str] = Field(default_factory=list)
     suppressions: list[SignalSuppressionConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -188,6 +201,15 @@ class FeatureOverrideConfig(BaseStrictModel):
             message = (
                 "Unsupported embedding floor exemption signal names: "
                 f"{unsupported_exemptions!r}"
+            )
+            raise ValueError(message)
+        unsupported_review_overrides = sorted(
+            set(self.review_on_signals).difference(_SUPPORTED_SIGNAL_NAMES)
+        )
+        if unsupported_review_overrides:
+            message = (
+                "Unsupported review_on_signals signal names: "
+                f"{unsupported_review_overrides!r}"
             )
             raise ValueError(message)
         if (
@@ -432,7 +454,12 @@ def _build_deterministic_defaults(*, entity_type: EntityType) -> DeterministicCo
             shared_domain=DeterministicSignalConfig(weight=0.06),
             shared_taxonomy=DeterministicSignalConfig(weight=0.08),
             shared_address=DeterministicSignalConfig(weight=0.25),
+            address_plus_taxonomy=DeterministicSignalConfig(enabled=False, weight=0.0),
+            address_plus_taxonomy_plus_contact=DeterministicSignalConfig(
+                enabled=False, weight=0.0
+            ),
             shared_identifier=DeterministicSignalConfig(weight=0.25),
+            organization_name_similarity=DeterministicSignalConfig(enabled=False, weight=0.0),
         )
     return DeterministicConfig(
         shared_email=DeterministicSignalConfig(weight=0.16),
@@ -440,7 +467,10 @@ def _build_deterministic_defaults(*, entity_type: EntityType) -> DeterministicCo
         shared_domain=DeterministicSignalConfig(weight=0.04),
         shared_taxonomy=DeterministicSignalConfig(weight=0.12),
         shared_address=DeterministicSignalConfig(weight=0.34),
+        address_plus_taxonomy=DeterministicSignalConfig(enabled=False, weight=0.0),
+        address_plus_taxonomy_plus_contact=DeterministicSignalConfig(enabled=False, weight=0.0),
         shared_identifier=DeterministicSignalConfig(enabled=False, weight=0.0),
+        organization_name_similarity=DeterministicSignalConfig(enabled=False, weight=0.0),
     )
 
 

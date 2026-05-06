@@ -20,6 +20,10 @@ from hsds_entity_resolution.core.domain_utils import domain_overlap_score, extra
 from hsds_entity_resolution.core.evidence_policy import is_contributing_evidence
 from hsds_entity_resolution.core.ml_inference import score_pairs_with_model, to_legacy_entity
 from hsds_entity_resolution.core.nlp import compute_nlp_score
+from hsds_entity_resolution.core.nlp.algorithms import (
+    resolve_fuzzy_similarity,
+    token_sort_ratio_similarity,
+)
 from hsds_entity_resolution.core.pair_tiering import (
     classify_pair_outcome,
     is_review_eligible_outcome,
@@ -43,7 +47,11 @@ from hsds_entity_resolution.types.frames import PAIR_REASONS_SCHEMA, SCORED_PAIR
 _ADDRESS_REASON_MATCH_TYPE = "shared_address"
 _DOMAIN_REASON_MATCH_TYPE = "shared_domain"
 _TAXONOMY_REASON_MATCH_TYPE = "shared_taxonomy"
+_ADDRESS_TAXONOMY_REASON_MATCH_TYPE = "address_plus_taxonomy"
+_ADDRESS_TAXONOMY_CONTACT_REASON_MATCH_TYPE = "address_plus_taxonomy_plus_contact"
+_ORGANIZATION_NAME_REASON_MATCH_TYPE = "organization_name_similarity"
 _DIRECT_TAXONOMY_EXEMPTION_SCORE = 0.7
+_ORGANIZATION_NAME_SIMILARITY_THRESHOLD = 0.75
 
 
 @dataclass(frozen=True)
@@ -386,6 +394,11 @@ def _finalize_pair(
         reasons=[*record.det_reasons, *record.nlp_reasons],
         policy=policy,
     )
+    pair_outcome = _apply_review_on_signals_policy(
+        pair_outcome=pair_outcome,
+        reasons=[*record.det_reasons, *record.nlp_reasons],
+        policy=policy,
+    )
     predicted_duplicate = pair_outcome == "duplicate"
     review_eligible = is_review_eligible_outcome(pair_outcome)
     reasons = [*record.det_reasons, *record.nlp_reasons]
@@ -480,6 +493,32 @@ def _has_embedding_floor_exemption(
     return False
 
 
+def _apply_review_on_signals_policy(
+    *,
+    pair_outcome: str,
+    reasons: list[dict[str, Any]],
+    policy: EffectiveScoringPolicy,
+) -> str:
+    """Promote below_maybe to maybe when a configured review_on_signals signal fired.
+
+    Per-pair-rule ``review_on_signals`` lists deterministic signals that are
+    considered strong enough evidence to send a pair to the steward review queue
+    regardless of its composite score.  If the pair is already review-eligible
+    (``maybe`` or ``duplicate``) this step is a no-op.  If any listed signal
+    appears in the pair's reasons the outcome is promoted to ``"maybe"``
+    (``predicted_duplicate`` remains ``False``).
+    """
+    if pair_outcome != "below_maybe":
+        return pair_outcome
+    review_on = set(policy.feature_overrides.review_on_signals)
+    if not review_on:
+        return pair_outcome
+    fired = {str(r.get("match_type") or "") for r in reasons}
+    if fired & review_on:
+        return "maybe"
+    return pair_outcome
+
+
 def _deterministic_score(
     *,
     left: dict[str, Any],
@@ -500,6 +539,11 @@ def _deterministic_score(
     shared_identifier_left = _canonical_identifier_values(left.get("identifiers"))
     shared_identifier_right = _canonical_identifier_values(right.get("identifiers"))
     taxonomy_overlap = _taxonomy_overlap_details(left=left, right=right)
+    organization_name_similarity = _organization_name_similarity(
+        left=left,
+        right=right,
+        config=config,
+    )
     channels = {
         "shared_email": (
             left.get("emails"),
@@ -546,6 +590,33 @@ def _deterministic_score(
                 overrides=policy.feature_overrides,
             ),
         ),
+        "address_plus_taxonomy": (
+            [],
+            [],
+            deterministic_signal_config(
+                config=config,
+                signal_name="address_plus_taxonomy",
+                overrides=policy.feature_overrides,
+            ),
+        ),
+        "address_plus_taxonomy_plus_contact": (
+            [],
+            [],
+            deterministic_signal_config(
+                config=config,
+                signal_name="address_plus_taxonomy_plus_contact",
+                overrides=policy.feature_overrides,
+            ),
+        ),
+        "organization_name_similarity": (
+            [],
+            [],
+            deterministic_signal_config(
+                config=config,
+                signal_name="organization_name_similarity",
+                overrides=policy.feature_overrides,
+            ),
+        ),
     }
     if entity_type == "organization":
         channels["shared_identifier"] = (
@@ -566,11 +637,41 @@ def _deterministic_score(
         overlap = _overlap_details(left_values=left_values, right_values=right_values)
         is_domain_reason = match_type == _DOMAIN_REASON_MATCH_TYPE
         is_taxonomy_reason = match_type == _TAXONOMY_REASON_MATCH_TYPE
+        is_address_taxonomy_reason = match_type == _ADDRESS_TAXONOMY_REASON_MATCH_TYPE
+        is_address_taxonomy_contact_reason = (
+            match_type == _ADDRESS_TAXONOMY_CONTACT_REASON_MATCH_TYPE
+        )
+        is_organization_name_reason = match_type == _ORGANIZATION_NAME_REASON_MATCH_TYPE
+        is_phone_reason = match_type == "shared_phone"
         raw = (
             domain_raw
             if is_domain_reason
             else taxonomy_overlap["score"]
             if is_taxonomy_reason
+            else _address_taxonomy_score(
+                address_values_left=shared_address_left,
+                address_values_right=shared_address_right,
+                taxonomy_overlap=taxonomy_overlap,
+                require_contact=False,
+                left=left,
+                right=right,
+                domain_raw=domain_raw,
+            )
+            if is_address_taxonomy_reason
+            else _address_taxonomy_score(
+                address_values_left=shared_address_left,
+                address_values_right=shared_address_right,
+                taxonomy_overlap=taxonomy_overlap,
+                require_contact=True,
+                left=left,
+                right=right,
+                domain_raw=domain_raw,
+            )
+            if is_address_taxonomy_contact_reason
+            else organization_name_similarity
+            if is_organization_name_reason
+            else 1.0
+            if is_phone_reason and overlap["shared_value"] is not None
             else overlap["ratio"]
         )
         weighted = _signal_weighted_contribution(
@@ -597,6 +698,14 @@ def _deterministic_score(
                             if is_domain_reason
                             else taxonomy_overlap["shared_value"]
                             if is_taxonomy_reason
+                            or is_address_taxonomy_reason
+                            or is_address_taxonomy_contact_reason
+                            else _organization_name_match_value(
+                                similarity=organization_name_similarity,
+                                left=left,
+                                right=right,
+                            )
+                            if is_organization_name_reason
                             else overlap["shared_value"]
                         ),
                     ),
@@ -607,6 +716,10 @@ def _deterministic_score(
                             if is_domain_reason
                             else taxonomy_overlap["left_values"]
                             if is_taxonomy_reason
+                            or is_address_taxonomy_reason
+                            or is_address_taxonomy_contact_reason
+                            else [clean_text_scalar(left.get("organization_name"))]
+                            if is_organization_name_reason
                             else overlap["left_values"]
                         ),
                     ),
@@ -617,10 +730,21 @@ def _deterministic_score(
                             if is_domain_reason
                             else taxonomy_overlap["right_values"]
                             if is_taxonomy_reason
+                            or is_address_taxonomy_reason
+                            or is_address_taxonomy_contact_reason
+                            else [clean_text_scalar(right.get("organization_name"))]
+                            if is_organization_name_reason
                             else overlap["right_values"]
                         ),
                     ),
-                    similarity_score=raw if is_taxonomy_reason else None,
+                    similarity_score=(
+                        raw
+                        if is_taxonomy_reason
+                        or is_address_taxonomy_reason
+                        or is_address_taxonomy_contact_reason
+                        or is_organization_name_reason
+                        else None
+                    ),
                 )
             )
     return _normalize_section_score(
@@ -639,6 +763,9 @@ def _log_scoring_configuration(*, config: EntityResolutionRunConfig) -> None:
         "shared_domain",
         "shared_taxonomy",
         "shared_address",
+        "address_plus_taxonomy",
+        "address_plus_taxonomy_plus_contact",
+        "organization_name_similarity",
     ]
     if entity_type == "organization":
         deterministic_signals.append("shared_identifier")
@@ -692,6 +819,92 @@ def _overlap_details(*, left_values: Any, right_values: Any) -> dict[str, Any]:
         "left_values": normalized_left,
         "right_values": normalized_right,
     }
+
+
+def _address_taxonomy_score(
+    *,
+    address_values_left: list[str],
+    address_values_right: list[str],
+    taxonomy_overlap: dict[str, Any],
+    require_contact: bool,
+    left: dict[str, Any],
+    right: dict[str, Any],
+    domain_raw: float,
+) -> float:
+    """Return 1.0 when exact address and direct taxonomy evidence converge."""
+    address_overlap = _overlap_details(
+        left_values=address_values_left,
+        right_values=address_values_right,
+    )
+    taxonomy_score = float(taxonomy_overlap.get("score") or 0.0)
+    if address_overlap["shared_value"] is None or taxonomy_score < _DIRECT_TAXONOMY_EXEMPTION_SCORE:
+        return 0.0
+    if require_contact and not _has_any_contact_overlap(
+        left=left,
+        right=right,
+        domain_raw=domain_raw,
+    ):
+        return 0.0
+    return 1.0
+
+
+def _has_any_contact_overlap(
+    *,
+    left: dict[str, Any],
+    right: dict[str, Any],
+    domain_raw: float,
+) -> bool:
+    """Return whether the pair has exact contact overlap beyond physical address."""
+    if domain_raw > 0.0:
+        return True
+    for field in ("emails", "phones"):
+        if _overlap_details(left_values=left.get(field), right_values=right.get(field))[
+            "shared_value"
+        ] is not None:
+            return True
+    return False
+
+
+def _organization_name_similarity(
+    *,
+    left: dict[str, Any],
+    right: dict[str, Any],
+    config: EntityResolutionRunConfig,
+) -> float:
+    """Compute provider/offered-by organization-name similarity for service pairs."""
+    left_name = clean_text_scalar(left.get("organization_name"))
+    right_name = clean_text_scalar(right.get("organization_name"))
+    if not left_name or not right_name:
+        return 0.0
+    similarity = resolve_fuzzy_similarity(
+        left_name=left_name,
+        right_name=right_name,
+        algorithm=config.scoring.nlp.fuzzy_algorithm,
+        strict_validation_mode=config.execution.strict_validation_mode,
+    )
+    similarity = max(
+        similarity,
+        token_sort_ratio_similarity(left_name=left_name, right_name=right_name),
+    )
+    return similarity if similarity >= _ORGANIZATION_NAME_SIMILARITY_THRESHOLD else 0.0
+
+
+def _organization_name_match_value(
+    *,
+    similarity: float,
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> str | None:
+    """Return compact provider-name display evidence when the signal fires."""
+    if similarity <= 0.0:
+        return None
+    left_name = clean_text_scalar(left.get("organization_name"))
+    right_name = clean_text_scalar(right.get("organization_name"))
+    if left_name and left_name == right_name:
+        return left_name
+    if left_name and right_name:
+        return f"{left_name} | {right_name}"
+    return left_name or right_name or None
 
 
 def _canonical_address_values(locations_value: Any) -> list[str]:
