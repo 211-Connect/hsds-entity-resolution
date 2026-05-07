@@ -394,13 +394,11 @@ def _finalize_pair(
         reasons=[*record.det_reasons, *record.nlp_reasons],
         policy=policy,
     )
-    pair_outcome = _apply_review_on_signals_policy(
-        pair_outcome=pair_outcome,
+    predicted_duplicate = pair_outcome == "duplicate"
+    review_eligible = is_review_eligible_outcome(pair_outcome) or _review_on_signal_fired(
         reasons=[*record.det_reasons, *record.nlp_reasons],
         policy=policy,
     )
-    predicted_duplicate = pair_outcome == "duplicate"
-    review_eligible = is_review_eligible_outcome(pair_outcome)
     reasons = [*record.det_reasons, *record.nlp_reasons]
     if ml_score is not None:
         ml_reason = _ml_reason(ml_score=ml_score, config=config, policy=policy)
@@ -493,30 +491,23 @@ def _has_embedding_floor_exemption(
     return False
 
 
-def _apply_review_on_signals_policy(
+def _review_on_signal_fired(
     *,
-    pair_outcome: str,
     reasons: list[dict[str, Any]],
     policy: EffectiveScoringPolicy,
-) -> str:
-    """Promote below_maybe to maybe when a configured review_on_signals signal fired.
+) -> bool:
+    """Return True when a configured review_on_signals signal appears in the pair's reasons.
 
     Per-pair-rule ``review_on_signals`` lists deterministic signals that are
-    considered strong enough evidence to send a pair to the steward review queue
-    regardless of its composite score.  If the pair is already review-eligible
-    (``maybe`` or ``duplicate``) this step is a no-op.  If any listed signal
-    appears in the pair's reasons the outcome is promoted to ``"maybe"``
-    (``predicted_duplicate`` remains ``False``).
+    strong enough to force a pair into the steward review queue regardless of
+    its composite score.  ``pair_outcome`` is left unchanged so the actual score
+    band is preserved; only ``review_eligible`` is overridden to ``True``.
     """
-    if pair_outcome != "below_maybe":
-        return pair_outcome
     review_on = set(policy.feature_overrides.review_on_signals)
     if not review_on:
-        return pair_outcome
+        return False
     fired = {str(r.get("match_type") or "") for r in reasons}
-    if fired & review_on:
-        return "maybe"
-    return pair_outcome
+    return bool(fired & review_on)
 
 
 def _deterministic_score(
