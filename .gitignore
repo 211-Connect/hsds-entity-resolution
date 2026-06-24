@@ -231,3 +231,4 @@ docs/
 !docs/
 docs/*
 !docs/deduplication-schema-audit.md
+.DS_Store

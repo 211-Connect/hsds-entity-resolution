@@ -192,6 +192,28 @@ def _generate_for_entity_type(
     type_frame = frame.filter(pl.col("entity_type") == entity_type)
     if type_frame.is_empty():
         return _empty_candidate_frame(), _empty_blocking_overview(entity_type=entity_type)
+    duplicate_rows = (
+        type_frame.group_by(["source_schema", "entity_id"])
+        .agg(pl.len().alias("row_count"))
+        .filter(pl.col("row_count") > 1)
+        .sort("row_count", descending=True)
+    )
+    if duplicate_rows.height > 0:
+        examples = duplicate_rows.head(5).select(["source_schema", "entity_id", "row_count"])
+        example_text = "; ".join(
+            f"{row['source_schema']}/{row['entity_id']} ({row['row_count']} rows)"
+            for row in examples.iter_rows(named=True)
+        )
+        extra = duplicate_rows.height - min(duplicate_rows.height, 5)
+        suffix = f" (+{extra} more)" if extra > 0 else ""
+        extra_row_count = int(duplicate_rows.select((pl.col("row_count") - 1).sum()).item())
+        raise ValueError(
+            f"Duplicate {entity_type} entity rows before candidate generation: "
+            f"{duplicate_rows.height} entity_ids have extra rows ({extra_row_count} extra rows total). "
+            f"Examples: {example_text}{suffix}. "
+            "Fix upstream in DEDUPLICATION.ER_STAGING (STG_SERVICE_DENORMALIZED / "
+            "STG_ORGANIZATION_DENORMALIZED); do not dedupe silently in generate_candidates."
+        )
     changed_ids = set(
         changed_entities.filter(pl.col("entity_type") == entity_type)
         .get_column("entity_id")
@@ -639,12 +661,12 @@ def _collect_anchor_candidates(
             break
         if candidate_idx == anchor_idx:
             continue
+        candidate = entity_rows[candidate_idx]
         similarity = float(similarities[candidate_idx])
         if similarity < threshold:
             break
         saw_above_threshold = True
         diagnostics.above_threshold += 1
-        candidate = entity_rows[candidate_idx]
         channel_hits = _collect_blocking_channel_hits(
             anchor=anchor,
             candidate=candidate,
