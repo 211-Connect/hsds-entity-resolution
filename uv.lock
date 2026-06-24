@@ -1252,7 +1252,7 @@ wheels = [
 
 [[package]]
 name = "hsds-record-matcher"
-version = "1.0.2"
+version = "1.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "dagster" },
