@@ -532,3 +532,42 @@ class TestOrgPassthrough:
         total_in_others = sum(s.height for s in shards[1:])
         assert total_in_shard_0 == len(org_pairs)
         assert total_in_others == 0
+
+
+# ---------------------------------------------------------------------------
+# Memory-safe score chunking parity
+# ---------------------------------------------------------------------------
+
+
+class TestScoreChunkingParity:
+    def test_score_chunking_matches_baseline(self) -> None:
+        config = _ml_disabled_service_config()
+        entity_ids = [f"svc-{i:03d}" for i in range(10)]
+        svc_entities = _build_svc_entity_frame(entity_ids)
+        pair_dicts = [
+            _svc_candidate_pair(entity_ids[i], entity_ids[i + 1])
+            for i in range(0, len(entity_ids) - 1, 2)
+        ]
+        candidates = _build_candidate_frame(pair_dicts)
+
+        baseline = score_candidates(
+            candidate_pairs=candidates,
+            denormalized_organization=pl.DataFrame(),
+            denormalized_service=svc_entities,
+            config=config,
+        )
+
+        chunked_payload = config.model_dump()
+        chunked_payload["chunking"] = {"score_candidate_chunk_size": 2}
+        chunked_config = EntityResolutionRunConfig.model_validate(chunked_payload)
+        chunked = score_candidates(
+            candidate_pairs=candidates,
+            denormalized_organization=pl.DataFrame(),
+            denormalized_service=svc_entities,
+            config=chunked_config,
+        )
+
+        assert baseline.scored_pairs.sort("pair_key").equals(chunked.scored_pairs.sort("pair_key"))
+        assert baseline.pair_reasons.sort(["pair_key", "match_type"]).equals(
+            chunked.pair_reasons.sort(["pair_key", "match_type"])
+        )

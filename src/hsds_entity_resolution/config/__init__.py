@@ -2,6 +2,7 @@
 
 from hsds_entity_resolution.config.entity_resolution_run_config import (
     BlockingConfig,
+    ChunkingConfig,
     ClusteringConfig,
     EntityResolutionRunConfig,
     ExecutionConfig,
@@ -16,6 +17,7 @@ from hsds_entity_resolution.config.entity_resolution_run_config import (
 
 __all__ = [
     "BlockingConfig",
+    "ChunkingConfig",
     "ClusteringConfig",
     "EntityResolutionRunConfig",
     "ExecutionConfig",

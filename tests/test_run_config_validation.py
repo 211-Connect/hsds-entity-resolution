@@ -189,3 +189,29 @@ def test_source_policy_accepts_cross_source_same_profile_relation() -> None:
 
     assert config.source_policy.admission_rules[0].source_relation == "cross_source_same_profile"
     assert config.source_policy.pair_rules[0].source_relation == "cross_source_same_profile"
+
+
+def test_chunking_defaults_preserve_unbounded_behavior() -> None:
+    """Default chunking config should leave all knobs unset."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team",
+        scope_id="scope",
+        entity_type="service",
+    )
+    assert config.chunking.generate_anchor_chunk_size is None
+    assert config.chunking.score_candidate_chunk_size is None
+    assert config.chunking.max_contact_overlap_pairs_per_anchor is None
+    assert config.chunking.max_contact_index_fanout is None
+
+
+def test_chunking_rejects_zero_sizes() -> None:
+    """Chunk sizes and caps must be strictly positive when provided."""
+    payload = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team",
+        scope_id="scope",
+        entity_type="organization",
+    ).model_dump()
+    payload["chunking"] = {"generate_anchor_chunk_size": 0}
+
+    with pytest.raises(ValueError):
+        _ = EntityResolutionRunConfig.model_validate(payload)

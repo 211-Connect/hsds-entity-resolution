@@ -71,6 +71,52 @@ class BlockingConfig(BaseStrictModel):
         return unique_values
 
 
+class ChunkingConfig(BaseStrictModel):
+    """Memory-bounded chunking controls for monolithic (single-shard) ER stages.
+
+    Defaults keep historical unbounded behavior: unset values mean "no chunking"
+    and "no contact-overlap caps". Consumers enable knobs explicitly when large
+    explicit-backfill jobs must stay within a fixed pod memory budget.
+    """
+
+    generate_anchor_chunk_size: int | None = Field(
+        default=None,
+        ge=1,
+        le=500_000,
+        description=(
+            "When set, process generate-candidate anchors in batches of this size "
+            "instead of one monolithic loop."
+        ),
+    )
+    score_candidate_chunk_size: int | None = Field(
+        default=None,
+        ge=1,
+        le=500_000,
+        description=(
+            "When set, score candidate pairs in batches of this size to bound peak "
+            "memory from full-frame materialization."
+        ),
+    )
+    max_contact_overlap_pairs_per_anchor: int | None = Field(
+        default=None,
+        ge=1,
+        le=100_000,
+        description=(
+            "When set, cap default contact-overlap pairs retained per anchor. "
+            "Unset preserves prior uncapped contact-overlap expansion."
+        ),
+    )
+    max_contact_index_fanout: int | None = Field(
+        default=None,
+        ge=1,
+        le=100_000,
+        description=(
+            "When set, truncate inverted-index values that map to more than this many "
+            "entities (deterministic sorted keep). Unset preserves prior uncapped fanout."
+        ),
+    )
+
+
 class AdmissionRuleConfig(BaseStrictModel):
     """Generic candidate-admission rule evaluated after embedding threshold."""
 
@@ -396,6 +442,7 @@ class EntityResolutionRunConfig(BaseStrictModel):
     execution: ExecutionConfig
     metadata: MetadataConfig
     source_policy: SourcePolicyConfig = Field(default_factory=SourcePolicyConfig)
+    chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
 
     @classmethod
     def defaults_for_entity_type(
@@ -442,6 +489,7 @@ class EntityResolutionRunConfig(BaseStrictModel):
                 policy_version=policy_version,
                 model_version=model_version,
             ),
+            chunking=ChunkingConfig(),
         )
 
 

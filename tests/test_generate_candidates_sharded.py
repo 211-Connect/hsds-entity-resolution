@@ -420,3 +420,88 @@ class TestShardsMatchMonolithicGenerate:
             anchor_ids_subset=frozenset(),
         )
         assert result.candidate_pairs.is_empty()
+
+
+# ---------------------------------------------------------------------------
+# Memory-safe single-shard chunking parity / caps
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateChunkingParity:
+    """Chunked generate path should match baseline unless contact caps are set."""
+
+    def _frames(self, n: int = 12) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+        import numpy as np
+
+        rng = np.random.default_rng(17)
+        rows = [
+            _make_entity_row(f"org-{i:04d}", "organization", rng.standard_normal(8).tolist())
+            for i in range(n)
+        ]
+        # Shared phone to exercise contact-overlap expansion.
+        for row in rows:
+            row["phones"] = ["555-0100"]
+            row["locations"] = [
+                {
+                    "address_1": "100 Main St",
+                    "city": "Columbus",
+                    "state": "OH",
+                    "postal_code": "43215",
+                }
+            ]
+        org_df = pl.DataFrame(rows)
+        svc_df = org_df.clear()
+        changed = _changed_entities(list(org_df.get_column("entity_id").to_list()), "organization")
+        return org_df, svc_df, changed
+
+    def test_anchor_chunking_matches_baseline(self) -> None:
+        org_df, svc_df, changed = self._frames()
+        baseline_config = _org_config()
+        chunked_payload = baseline_config.model_dump()
+        chunked_payload["chunking"] = {"generate_anchor_chunk_size": 3}
+        chunked_config = EntityResolutionRunConfig.model_validate(chunked_payload)
+
+        baseline = generate_candidates(
+            denormalized_organization=org_df,
+            denormalized_service=svc_df,
+            changed_entities=changed,
+            config=baseline_config,
+            explicit_backfill=True,
+        )
+        chunked = generate_candidates(
+            denormalized_organization=org_df,
+            denormalized_service=svc_df,
+            changed_entities=changed,
+            config=chunked_config,
+            explicit_backfill=True,
+        )
+        assert set(baseline.candidate_pairs.get_column("pair_key").to_list()) == set(
+            chunked.candidate_pairs.get_column("pair_key").to_list()
+        )
+
+    def test_contact_overlap_pair_cap_limits_expansion(self) -> None:
+        org_df, svc_df, changed = self._frames(n=10)
+        baseline_config = _org_config()
+        capped_payload = baseline_config.model_dump()
+        capped_payload["chunking"] = {
+            "generate_anchor_chunk_size": 4,
+            "max_contact_overlap_pairs_per_anchor": 2,
+        }
+        capped_config = EntityResolutionRunConfig.model_validate(capped_payload)
+
+        baseline = generate_candidates(
+            denormalized_organization=org_df,
+            denormalized_service=svc_df,
+            changed_entities=changed,
+            config=baseline_config,
+            explicit_backfill=True,
+        )
+        capped = generate_candidates(
+            denormalized_organization=org_df,
+            denormalized_service=svc_df,
+            changed_entities=changed,
+            config=capped_config,
+            explicit_backfill=True,
+        )
+        assert capped.candidate_pairs.height < baseline.candidate_pairs.height
+        assert capped.candidate_pairs.height > 0

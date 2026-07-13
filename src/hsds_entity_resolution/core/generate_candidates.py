@@ -321,58 +321,84 @@ def _collect_candidate_records(
     last_retained_similarity_sum = 0.0
     last_retained_similarity_count = 0
 
+    anchor_chunk_size = config.chunking.generate_anchor_chunk_size
+    total_anchors = len(sorted_changed_ids)
     if progress_logger is not None:
-        progress_logger.stage_started(stage=stage_name, total=len(sorted_changed_ids))
-    for index, entity_id in enumerate(sorted_changed_ids, start=1):
-        if entity_id not in id_to_idx:
+        progress_logger.stage_started(stage=stage_name, total=total_anchors)
+
+    for chunk_start in range(0, total_anchors or 1, anchor_chunk_size or total_anchors or 1):
+        if total_anchors == 0:
+            break
+        chunk_end = (
+            total_anchors
+            if anchor_chunk_size is None
+            else min(chunk_start + anchor_chunk_size, total_anchors)
+        )
+        chunk_ids = sorted_changed_ids[chunk_start:chunk_end]
+        if anchor_chunk_size is not None:
+            get_dagster_logger().info(
+                "ℹ️ generate_anchor_chunk entity_type=%s chunk=%d-%d/%d "
+                "pairs_so_far=%d rss_gb=%.2f",
+                entity_type,
+                chunk_start + 1,
+                chunk_end,
+                total_anchors,
+                len(pairs_by_key),
+                _rss_gb(),
+            )
+        for offset, entity_id in enumerate(chunk_ids):
+            index = chunk_start + offset + 1
+            if entity_id not in id_to_idx:
+                if progress_logger is not None:
+                    progress_logger.stage_advanced(
+                        stage=stage_name,
+                        processed=index,
+                        total=total_anchors,
+                    )
+                continue
+            active_anchors += 1
+            anchor_idx = id_to_idx[entity_id]
+            similarities = normalized_matrix @ normalized_matrix[anchor_idx]
+            top_indices = np.argsort(similarities)[::-1].tolist()
+            anchor = entity_rows[anchor_idx]
+            capture_this_anchor = _start_first_anchor_capture(
+                diagnostics=diagnostics,
+                entity_id=entity_id,
+                anchor=anchor,
+            )
+            anchor_result = _collect_anchor_candidates(
+                anchor=anchor,
+                anchor_idx=anchor_idx,
+                entity_rows=entity_rows,
+                similarities=similarities,
+                top_indices=top_indices,
+                threshold=threshold,
+                default_threshold=default_threshold,
+                max_per_entity=max_per_entity,
+                overlap_channels=overlap_channels,
+                config=config,
+                pairs_by_key=pairs_by_key,
+                diagnostics=diagnostics,
+                capture_this_anchor=capture_this_anchor,
+            )
+            if anchor_result.saw_above_threshold:
+                anchors_with_above_threshold += 1
+            if anchor_result.selected > 0:
+                anchors_with_retained_candidates += 1
+                if anchor_result.last_retained_similarity is not None:
+                    last_retained_similarity_sum += anchor_result.last_retained_similarity
+                    last_retained_similarity_count += 1
+            if anchor_result.selected >= max_per_entity:
+                anchors_at_candidate_cap += 1
+            truncated_above_threshold += anchor_result.truncated_above_threshold
             if progress_logger is not None:
                 progress_logger.stage_advanced(
                     stage=stage_name,
                     processed=index,
-                    total=len(sorted_changed_ids),
+                    total=total_anchors,
                 )
-            continue
-        active_anchors += 1
-        anchor_idx = id_to_idx[entity_id]
-        similarities = normalized_matrix @ normalized_matrix[anchor_idx]
-        top_indices = np.argsort(similarities)[::-1].tolist()
-        anchor = entity_rows[anchor_idx]
-        capture_this_anchor = _start_first_anchor_capture(
-            diagnostics=diagnostics,
-            entity_id=entity_id,
-            anchor=anchor,
-        )
-        anchor_result = _collect_anchor_candidates(
-            anchor=anchor,
-            anchor_idx=anchor_idx,
-            entity_rows=entity_rows,
-            similarities=similarities,
-            top_indices=top_indices,
-            threshold=threshold,
-            default_threshold=default_threshold,
-            max_per_entity=max_per_entity,
-            overlap_channels=overlap_channels,
-            config=config,
-            pairs_by_key=pairs_by_key,
-            diagnostics=diagnostics,
-            capture_this_anchor=capture_this_anchor,
-        )
-        if anchor_result.saw_above_threshold:
-            anchors_with_above_threshold += 1
-        if anchor_result.selected > 0:
-            anchors_with_retained_candidates += 1
-            if anchor_result.last_retained_similarity is not None:
-                last_retained_similarity_sum += anchor_result.last_retained_similarity
-                last_retained_similarity_count += 1
-        if anchor_result.selected >= max_per_entity:
-            anchors_at_candidate_cap += 1
-        truncated_above_threshold += anchor_result.truncated_above_threshold
-        if progress_logger is not None:
-            progress_logger.stage_advanced(
-                stage=stage_name,
-                processed=index,
-                total=len(sorted_changed_ids),
-            )
+        if anchor_chunk_size is None:
+            break
     if progress_logger is not None:
         progress_logger.stage_completed(
             stage=stage_name,
@@ -385,6 +411,7 @@ def _collect_candidate_records(
         id_to_idx=id_to_idx,
         changed_ids=changed_ids,
         pairs_by_key=pairs_by_key,
+        config=config,
     )
     _log_blocking_summary(
         entity_type=entity_type,
@@ -426,42 +453,100 @@ def _collect_contact_overlap_candidates(
     id_to_idx: dict[str, int],
     changed_ids: set[str],
     pairs_by_key: dict[str, dict[str, Any]],
+    config: EntityResolutionRunConfig,
 ) -> int:
     """Add default contact-overlap candidates regardless of embedding similarity."""
     indexes = _build_contact_overlap_indexes(entity_rows=entity_rows)
     generated = 0
     seen_pair_keys: set[str] = set()
-    for anchor_id in sorted(changed_ids):
-        anchor_idx = id_to_idx.get(anchor_id)
-        if anchor_idx is None:
-            continue
-        anchor = entity_rows[anchor_idx]
-        candidate_reasons = _contact_candidate_reasons_by_id(
-            anchor=anchor,
-            indexes=indexes,
+    max_pairs_per_anchor = config.chunking.max_contact_overlap_pairs_per_anchor
+    max_index_fanout = config.chunking.max_contact_index_fanout
+    anchors_hit_pair_cap = 0
+    index_keys_truncated = 0
+    sorted_changed_ids = sorted(changed_ids)
+    anchor_chunk_size = config.chunking.generate_anchor_chunk_size
+    total_anchors = len(sorted_changed_ids)
+
+    for chunk_start in range(0, total_anchors or 1, anchor_chunk_size or total_anchors or 1):
+        if total_anchors == 0:
+            break
+        chunk_end = (
+            total_anchors
+            if anchor_chunk_size is None
+            else min(chunk_start + anchor_chunk_size, total_anchors)
         )
-        for candidate_id, reasons in sorted(candidate_reasons.items()):
-            if candidate_id == anchor_id:
-                continue
-            candidate_idx = id_to_idx.get(candidate_id)
-            if candidate_idx is None:
-                continue
-            candidate = entity_rows[candidate_idx]
-            pair_key = "__".join(_canonical_pair(anchor_id, candidate_id))
-            if pair_key in seen_pair_keys:
-                continue
-            seen_pair_keys.add(pair_key)
-            similarity = float(normalized_matrix[candidate_idx] @ normalized_matrix[anchor_idx])
-            record = _to_candidate_record(
-                anchor=anchor,
-                candidate=candidate,
-                similarity=similarity,
-                overlap_reasons=sorted(reasons),
-                blocking_rule_id=_CONTACT_OVERLAP_BLOCKING_RULE_ID,
-                include_embedding_reason=False,
+        chunk_ids = sorted_changed_ids[chunk_start:chunk_end]
+        if anchor_chunk_size is not None:
+            get_dagster_logger().info(
+                "ℹ️ contact_overlap_chunk entity_type=%s chunk=%d-%d/%d "
+                "pairs_so_far=%d generated=%d rss_gb=%.2f",
+                entity_type,
+                chunk_start + 1,
+                chunk_end,
+                total_anchors,
+                len(pairs_by_key),
+                generated,
+                _rss_gb(),
             )
-            if _merge_candidate_record(pairs_by_key=pairs_by_key, record=record):
-                generated += 1
+        for anchor_id in chunk_ids:
+            anchor_idx = id_to_idx.get(anchor_id)
+            if anchor_idx is None:
+                continue
+            anchor = entity_rows[anchor_idx]
+            candidate_reasons, truncated_keys = _contact_candidate_reasons_by_id(
+                anchor=anchor,
+                indexes=indexes,
+                max_contact_index_fanout=max_index_fanout,
+            )
+            index_keys_truncated += truncated_keys
+            considered_for_anchor = 0
+            hit_pair_cap = False
+            for candidate_id, reasons in sorted(candidate_reasons.items()):
+                if candidate_id == anchor_id:
+                    continue
+                if (
+                    max_pairs_per_anchor is not None
+                    and considered_for_anchor >= max_pairs_per_anchor
+                ):
+                    hit_pair_cap = True
+                    break
+                considered_for_anchor += 1
+                candidate_idx = id_to_idx.get(candidate_id)
+                if candidate_idx is None:
+                    continue
+                candidate = entity_rows[candidate_idx]
+                pair_key = "__".join(_canonical_pair(anchor_id, candidate_id))
+                if pair_key in seen_pair_keys:
+                    continue
+                seen_pair_keys.add(pair_key)
+                similarity = float(
+                    normalized_matrix[candidate_idx] @ normalized_matrix[anchor_idx]
+                )
+                record = _to_candidate_record(
+                    anchor=anchor,
+                    candidate=candidate,
+                    similarity=similarity,
+                    overlap_reasons=sorted(reasons),
+                    blocking_rule_id=_CONTACT_OVERLAP_BLOCKING_RULE_ID,
+                    include_embedding_reason=False,
+                )
+                if _merge_candidate_record(pairs_by_key=pairs_by_key, record=record):
+                    generated += 1
+            if hit_pair_cap:
+                anchors_hit_pair_cap += 1
+        if anchor_chunk_size is None:
+            break
+
+    if anchors_hit_pair_cap or index_keys_truncated:
+        get_dagster_logger().warning(
+            "⚠️ contact_overlap_caps_hit entity_type=%s anchors_pair_cap=%d "
+            "index_keys_truncated=%d max_pairs_per_anchor=%s max_index_fanout=%s",
+            entity_type,
+            anchors_hit_pair_cap,
+            index_keys_truncated,
+            max_pairs_per_anchor,
+            max_index_fanout,
+        )
     if generated:
         get_dagster_logger().info(
             "ℹ️ contact_overlap_candidates entity_type=%s generated=%d",
@@ -499,13 +584,25 @@ def _contact_candidate_reasons_by_id(
     *,
     anchor: dict[str, Any],
     indexes: dict[str, dict[str, set[str]]],
-) -> dict[str, set[str]]:
-    """Return contact-overlap reason codes keyed by candidate entity id."""
+    max_contact_index_fanout: int | None = None,
+) -> tuple[dict[str, set[str]], int]:
+    """Return contact-overlap reason codes keyed by candidate entity id.
+
+    When ``max_contact_index_fanout`` is set, inverted-index values that map to
+    more entities than the cap are deterministically truncated (sorted keep).
+    Returns ``(candidate_reasons, truncated_index_key_count)``.
+    """
     candidate_reasons: dict[str, set[str]] = {}
+    truncated_keys = 0
 
     def add_candidates(values: set[str], index_name: str, reason_code: str) -> None:
+        nonlocal truncated_keys
         for value in values:
-            for candidate_id in indexes[index_name].get(value, set()):
+            matches = indexes[index_name].get(value, set())
+            if max_contact_index_fanout is not None and len(matches) > max_contact_index_fanout:
+                truncated_keys += 1
+                matches = set(sorted(matches)[:max_contact_index_fanout])
+            for candidate_id in matches:
                 candidate_reasons.setdefault(candidate_id, set()).update(
                     {_CONTACT_OVERLAP_REASON_CODE, reason_code}
                 )
@@ -522,7 +619,17 @@ def _contact_candidate_reasons_by_id(
         "gov_domain",
         "shared_gov_domain",
     )
-    return candidate_reasons
+    return candidate_reasons, truncated_keys
+
+
+def _rss_gb() -> float:
+    """Return current process RSS in GB, or 0.0 when unavailable."""
+    try:
+        import psutil
+
+        return psutil.Process().memory_info().rss / (1024**3)
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def _merge_candidate_record(
@@ -968,6 +1075,8 @@ def _log_generate_candidates_overview(
         " above_threshold_truncated=%d (avg_per_capped=%.1f)"
         " overlap_blocked=%d/%d (%.1f%% of examined above-threshold)"
         " blocking_failures=[taxonomy_only=%d non_taxonomy_only=%d both=%d]"
+        " chunking=[generate_anchor_chunk_size=%s max_contact_overlap_pairs_per_anchor=%s"
+        " max_contact_index_fanout=%s]"
         " heuristic=%s per_type=[%s]",
         threshold,
         max_per_entity,
@@ -991,6 +1100,9 @@ def _log_generate_candidates_overview(
         totals.taxonomy_failed,
         totals.non_taxonomy_failed,
         totals.both_failed,
+        config.chunking.generate_anchor_chunk_size,
+        config.chunking.max_contact_overlap_pairs_per_anchor,
+        config.chunking.max_contact_index_fanout,
         heuristic_signals,
         overview_chunks,
     )

@@ -92,50 +92,67 @@ def score_candidates(
         denormalized_organization=denormalized_organization,
         denormalized_service=denormalized_service,
     )
-    candidate_rows = candidate_pairs.to_dicts()
+    total_pairs = candidate_pairs.height
+    chunk_size = config.chunking.score_candidate_chunk_size
+    effective_chunk_size = chunk_size if chunk_size is not None else total_pairs
     if progress_logger is not None:
         progress_logger.stage_started(
-            stage="score_candidates.pre_score_pairs", total=len(candidate_rows)
+            stage="score_candidates.pre_score_pairs", total=total_pairs
         )
-    pre_ml_records: list[PreMlPairRecord] = []
-    for index, row in enumerate(candidate_rows, start=1):
-        pre_ml_records.append(
-            _pre_score_pair(candidate=row, entity_lookup=entity_lookup, config=config)
+        progress_logger.stage_started(
+            stage="score_candidates.finalize_pairs", total=total_pairs
         )
-        if progress_logger is not None:
-            progress_logger.stage_advanced(
-                stage="score_candidates.pre_score_pairs",
-                processed=index,
-                total=len(candidate_rows),
+
+    scored_records: list[ScoredPairRecord] = []
+    processed = 0
+    for chunk_start in range(0, total_pairs, effective_chunk_size):
+        chunk_end = min(chunk_start + effective_chunk_size, total_pairs)
+        chunk_rows = candidate_pairs.slice(chunk_start, chunk_end - chunk_start).to_dicts()
+        if chunk_size is not None:
+            get_dagster_logger().info(
+                "ℹ️ score_candidate_chunk chunk=%d-%d/%d rss_gb=%.2f",
+                chunk_start + 1,
+                chunk_end,
+                total_pairs,
+                _rss_gb(),
             )
+        pre_ml_records: list[PreMlPairRecord] = []
+        for row in chunk_rows:
+            pre_ml_records.append(
+                _pre_score_pair(candidate=row, entity_lookup=entity_lookup, config=config)
+            )
+            processed += 1
+            if progress_logger is not None:
+                progress_logger.stage_advanced(
+                    stage="score_candidates.pre_score_pairs",
+                    processed=processed,
+                    total=total_pairs,
+                )
+        model_scores = _score_ml_subset(
+            pre_ml_records=pre_ml_records,
+            entity_lookup=entity_lookup,
+            config=config,
+            taxonomy_embeddings=taxonomy_embeddings,
+        )
+        for index, record in enumerate(pre_ml_records, start=1):
+            scored_records.append(
+                _finalize_pair(record=record, config=config, model_scores=model_scores)
+            )
+            if progress_logger is not None:
+                progress_logger.stage_advanced(
+                    stage="score_candidates.finalize_pairs",
+                    processed=chunk_start + index,
+                    total=total_pairs,
+                )
+        del pre_ml_records
+        del chunk_rows
+        del model_scores
+
     if progress_logger is not None:
         progress_logger.stage_completed(
             stage="score_candidates.pre_score_pairs",
-            detail={"pairs": len(pre_ml_records)},
+            detail={"pairs": total_pairs},
         )
-    model_scores = _score_ml_subset(
-        pre_ml_records=pre_ml_records,
-        entity_lookup=entity_lookup,
-        config=config,
-        taxonomy_embeddings=taxonomy_embeddings,
-    )
-    if progress_logger is not None:
-        progress_logger.stage_started(
-            stage="score_candidates.finalize_pairs",
-            total=len(pre_ml_records),
-        )
-    scored_records: list[ScoredPairRecord] = []
-    for index, record in enumerate(pre_ml_records, start=1):
-        scored_records.append(
-            _finalize_pair(record=record, config=config, model_scores=model_scores)
-        )
-        if progress_logger is not None:
-            progress_logger.stage_advanced(
-                stage="score_candidates.finalize_pairs",
-                processed=index,
-                total=len(pre_ml_records),
-            )
-    if progress_logger is not None:
         progress_logger.stage_completed(
             stage="score_candidates.finalize_pairs",
             detail={"pairs": len(scored_records)},
@@ -170,6 +187,16 @@ def score_candidates(
         pair_reasons=pair_reasons,
         score_delta_summary=summary,
     )
+
+
+def _rss_gb() -> float:
+    """Return current process RSS in GB, or 0.0 when unavailable."""
+    try:
+        import psutil
+
+        return psutil.Process().memory_info().rss / (1024**3)
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def _build_entity_lookup(
@@ -763,13 +790,14 @@ def _log_scoring_configuration(*, config: EntityResolutionRunConfig) -> None:
     logger.info(
         "ℹ️ score_candidates_config entity_type=%s ml_enabled=%s"
         " deterministic_signals=%s duplicate_threshold=%.2f maybe_threshold=%.2f"
-        " low_maybe_threshold=%.2f",
+        " low_maybe_threshold=%.2f score_candidate_chunk_size=%s",
         entity_type,
         config.scoring.ml.ml_enabled,
         deterministic_signals,
         config.scoring.duplicate_threshold,
         config.scoring.maybe_threshold,
         config.scoring.low_maybe_threshold,
+        config.chunking.score_candidate_chunk_size,
     )
 
 
