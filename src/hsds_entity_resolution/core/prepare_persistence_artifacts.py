@@ -26,8 +26,13 @@ def prepare_persistence_artifacts(
     removed_pair_ids: pl.DataFrame,
     pair_id_remap: pl.DataFrame,
     config: EntityResolutionRunConfig,
+    judge_answers: pl.DataFrame | None = None,
 ) -> PreparePersistenceArtifactsResult:
-    """Package host-ready typed artifacts and deterministic run summary."""
+    """Package host-ready typed artifacts and deterministic run summary.
+
+    ``judge_answers`` is added to the bundle under ``judge_answers`` only when a
+    judge ran, so bundles from runs without a judge are unchanged.
+    """
     artifact_version = "hsds-er-v1"
     bundle = _build_bundle(
         artifact_version=artifact_version,
@@ -45,6 +50,8 @@ def prepare_persistence_artifacts(
         pair_id_remap=pair_id_remap,
         config=config,
     )
+    if judge_answers is not None:
+        bundle["judge_answers"] = judge_answers
     run_summary = _build_run_summary(bundle=bundle)
     return PreparePersistenceArtifactsResult(
         persistence_artifact_bundle=bundle,

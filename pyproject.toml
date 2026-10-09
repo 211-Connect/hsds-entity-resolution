@@ -1,8 +1,8 @@
 [project]
-name = "hsds-record-matcher"
+name = "hsds-entity-resolution"
 requires-python = ">=3.10,<3.15"
-version = "1.2.0"
-description = "Reusable Dagster component package for HSDS entity resolution workflows."
+version = "2.0.0"
+description = "HSDS entity resolution: candidate generation, scoring, a Pair Judge contract and clustering, with a Dagster component."
 readme = "README.pypi.md"
 keywords = ["dagster", "entity-resolution", "hsds", "deduplication"]
 classifiers = [
@@ -36,6 +36,7 @@ dev = [
     "pytest-cov>=5,<7",
     "ruff>=0.11.0",
     "pyright>=1.1.400",
+    "hypothesis>=6.100,<7",
 ]
 
 [tool.ruff]

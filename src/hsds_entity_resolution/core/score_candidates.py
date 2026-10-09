@@ -372,7 +372,7 @@ def _has_embedding_floor_exemption(
         if match_type != _TAXONOMY_REASON_MATCH_TYPE:
             return True
         # Only exact or direct parent-child taxonomy evidence bypasses the
-        # WellSky semantic floor. Shallow same-root HSIS overlaps are not enough.
+        # embedding floor. Shallow same-root taxonomy overlaps are not enough.
         similarity_score = reason.get("similarity_score")
         if (
             similarity_score is not None

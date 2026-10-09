@@ -106,7 +106,7 @@ jobs:
     if: needs.release-check.outputs.should_publish == 'true'
     environment:
       name: pypi
-      url: https://pypi.org/project/hsds-record-matcher/
+      url: https://pypi.org/project/hsds-entity-resolution/
     permissions:
       id-token: write
     steps:
