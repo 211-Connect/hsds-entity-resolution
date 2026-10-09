@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import polars as pl
-from dagster import get_dagster_logger
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.dataframe_utils import (
@@ -38,7 +38,7 @@ def apply_mitigation(
     scope_removed: bool = False,
 ) -> ApplyMitigationResult:
     """Apply mitigation overrides and emit reconciliation artifacts."""
-    logger = get_dagster_logger()
+    logger = logging.getLogger(__name__)
     scored_pairs_df = to_dataframe(scored_pairs)
     pair_reasons_df = to_dataframe(pair_reasons)
     removed_entity_ids_df = ensure_columns(
@@ -218,7 +218,7 @@ def _log_apply_mitigation_start(
     scope_removed: bool,
 ) -> None:
     """Emit a compact start-of-stage snapshot for mitigation debugging."""
-    logger = get_dagster_logger()
+    logger = logging.getLogger(__name__)
     logger.info(
         "ℹ️ apply_mitigation_start enabled=%s scope_removed=%s no_change=%s"
         " scored_pairs=%d pair_reasons=%d previous_pair_state=%d removed_entities=%d"
@@ -243,7 +243,7 @@ def _log_apply_mitigation_summary(
     mode: str,
 ) -> None:
     """Emit one end-of-stage summary explaining mitigation output volume."""
-    logger = get_dagster_logger()
+    logger = logging.getLogger(__name__)
     finalized = result.finalized_scored_pairs
     mitigated = result.mitigation_events
     removed = result.removed_pair_ids

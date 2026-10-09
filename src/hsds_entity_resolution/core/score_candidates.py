@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from math import exp
 from typing import Any
 
 import polars as pl
-from dagster import get_dagster_logger
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.dataframe_utils import (
@@ -96,12 +96,8 @@ def score_candidates(
     chunk_size = config.chunking.score_candidate_chunk_size
     effective_chunk_size = chunk_size if chunk_size is not None else total_pairs
     if progress_logger is not None:
-        progress_logger.stage_started(
-            stage="score_candidates.pre_score_pairs", total=total_pairs
-        )
-        progress_logger.stage_started(
-            stage="score_candidates.finalize_pairs", total=total_pairs
-        )
+        progress_logger.stage_started(stage="score_candidates.pre_score_pairs", total=total_pairs)
+        progress_logger.stage_started(stage="score_candidates.finalize_pairs", total=total_pairs)
 
     scored_records: list[ScoredPairRecord] = []
     processed = 0
@@ -109,7 +105,7 @@ def score_candidates(
         chunk_end = min(chunk_start + effective_chunk_size, total_pairs)
         chunk_rows = candidate_pairs.slice(chunk_start, chunk_end - chunk_start).to_dicts()
         if chunk_size is not None:
-            get_dagster_logger().info(
+            logging.getLogger(__name__).info(
                 "ℹ️ score_candidate_chunk chunk=%d-%d/%d rss_gb=%.2f",
                 chunk_start + 1,
                 chunk_end,
@@ -773,7 +769,7 @@ def _deterministic_score(
 
 def _log_scoring_configuration(*, config: EntityResolutionRunConfig) -> None:
     """Emit one INFO summary of active scoring semantics for this run scope."""
-    logger = get_dagster_logger()
+    logger = logging.getLogger(__name__)
     entity_type = config.metadata.entity_type
     deterministic_signals = [
         "shared_email",
@@ -877,9 +873,12 @@ def _has_any_contact_overlap(
     if domain_raw > 0.0:
         return True
     for field in ("emails", "phones"):
-        if _overlap_details(left_values=left.get(field), right_values=right.get(field))[
-            "shared_value"
-        ] is not None:
+        if (
+            _overlap_details(left_values=left.get(field), right_values=right.get(field))[
+                "shared_value"
+            ]
+            is not None
+        ):
             return True
     return False
 
@@ -1362,7 +1361,7 @@ def _log_shadow_confidence_diagnostics(
     """Log side-by-side shadow confidence saturation diagnostics."""
     if scored_pairs.is_empty():
         return
-    logger = get_dagster_logger()
+    logger = logging.getLogger(__name__)
     legacy_mean = _safe_series_mean(scored_pairs, "legacy_confidence_score")
     shadow_mean = _safe_series_mean(scored_pairs, "shadow_confidence_score")
     legacy_perfect = scored_pairs.filter(pl.col("legacy_confidence_score") >= 0.999).height
@@ -1462,7 +1461,7 @@ def _log_signal_count_table(
     config: EntityResolutionRunConfig,
 ) -> None:
     """Log the signal-count × band table with ML gate pass rates per tier."""
-    logger = get_dagster_logger()
+    logger = logging.getLogger(__name__)
     gate = config.scoring.ml.ml_gate_threshold
 
     # Aggregate by signal count.
@@ -1529,7 +1528,7 @@ def _log_signal_count_table(
 
 def _log_individual_signal_table(*, records: list[dict[str, object]]) -> None:
     """Log per-signal breakdown: how many pairs with each signal land in each band."""
-    logger = get_dagster_logger()
+    logger = logging.getLogger(__name__)
     logger.info(
         "  %-14s  %-8s  %-8s  %-8s  %-8s",
         "signal",

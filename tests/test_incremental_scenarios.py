@@ -372,7 +372,7 @@ def test_s1b_full_pipeline_entity_change_drops_score_emits_score_dropped() -> No
 
 
 def test_s1c_pair_demotes_from_duplicate_to_maybe_stays_retained() -> None:
-    """S1-C: A pair re-scoring in the soft-maybe band stays retained with predicted_duplicate False."""
+    """S1-C: A pair re-scoring in the soft-maybe band stays retained, not predicted duplicate."""
     config = _config(team_id="team-s1c", scope_id="s1c")
     previous_pair_state = pl.DataFrame([_pair_state_row(_PAIR_KEY, "org-a", "org-b", "s1c")])
 
@@ -415,7 +415,7 @@ def test_s1c_pair_demotes_from_duplicate_to_maybe_stays_retained() -> None:
 
 
 def test_s1d_maybe_pair_drops_below_maybe_emits_score_dropped() -> None:
-    """S1-D: A previously review-eligible pair that drops below low_maybe_threshold is score_dropped."""
+    """S1-D: A review-eligible pair that drops below low_maybe_threshold is score_dropped."""
     config = _config(team_id="team-s1d", scope_id="s1d")
     previous_pair_state = pl.DataFrame([_pair_state_row(_PAIR_KEY, "org-a", "org-b", "s1d")])
     # Score just below low_maybe_threshold (leaves the review queue entirely).
@@ -452,14 +452,16 @@ def test_s1e_entity_change_causes_candidate_lost() -> None:
     _assert_retained(run1, _PAIR_KEY)
 
     # Run 2: entity A changes its identifier (triggers content_hash change so
-    # candidates are re-generated) AND its embedding becomes orthogonal to B
-    # (cosine ≈ 0.0 < 0.75 blocking threshold → pair never generated).
+    # candidates are re-generated), its embedding becomes orthogonal to B
+    # (cosine ≈ 0.0 < 0.75 blocking threshold) AND it stops sharing contacts
+    # with B. Shared contacts seed a candidate on their own, so all three must
+    # change for the pair to stop being generated.
     entity_a_ortho = _entity_row(
         "org-a",
         "North Clinic",
-        emails=[_SHARED_EMAIL],
-        phones=[_SHARED_PHONE],
-        websites=[_SHARED_WEBSITE],
+        emails=["north@clinic-a.example.org"],
+        phones=["5550100001"],
+        websites=["https://clinic-a.example.org"],
         identifiers=[{"system": "npi", "value": "9999"}],
         embedding=_EMB_ORTHO,
     )
@@ -1112,7 +1114,7 @@ def test_s4a_duplicate_threshold_raised_pair_demotes_to_maybe() -> None:
 
 
 def test_s4b_maybe_threshold_raised_pair_emits_score_dropped() -> None:
-    """S4-B: Raising maybe_threshold (and low_maybe) clears pairs that fall out of all review bands."""
+    """S4-B: Raising maybe_threshold (and low_maybe) clears pairs that leave all review bands."""
     config = _config(team_id="team-s4b", scope_id="s4b")
     # Score sits in the soft-maybe band under the default thresholds.
     low_m = config.scoring.low_maybe_threshold

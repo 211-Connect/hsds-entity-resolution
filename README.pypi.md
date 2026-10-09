@@ -82,7 +82,7 @@ Denormalized HSDS entity records. Required columns:
 | Column | Type | Description |
 |---|---|---|
 | `entity_id` | `str` | Stable unique identifier for this record |
-| `source_schema` | `str` | Tenant or source identifier (e.g. `il211_regional`) |
+| `source_schema` | `str` | Tenant or source identifier (e.g. `region_a`) |
 | `name` | `str` | Entity name used for NLP scoring |
 | `description` | `str` | Entity description used for NLP scoring |
 | `emails` | `list[str]` | Normalized email addresses |

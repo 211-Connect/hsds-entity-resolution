@@ -1,0 +1,148 @@
+{
+  "_comment": "Synthetic service pair. Two locations of one fictional organization list the same hotline service under the same taxonomy code, share the national 988 number, a contact email and an identical description, but sit at different addresses. Every name, id, address, phone and domain is invented; the structure mirrors a pair shape the pipeline sees in practice.",
+  "source": {
+    "synthetic": true,
+    "run_id": "run-synthetic-0001",
+    "team_id": "TEAM_A",
+    "source_schema": "source_a"
+  },
+  "pair": {
+    "id": "aaaaaaaa-0000-4000-8000-00000000000a__bbbbbbbb-0000-4000-8000-00000000000b",
+    "entity_type": "service",
+    "confidence_score": 0.7443181818,
+    "shadow_confidence_score": 0.6410674063,
+    "predicted_duplicate": true,
+    "deterministic_section_score": 0.4886363636,
+    "nlp_section_score": 1.0,
+    "ml_section_score": null,
+    "embedding_similarity": 1.0,
+    "scoring_note": "Service thresholds: dup=0.70, maybe=0.62. ML absent for services; final = det×0.50 + nlp×0.50 ≈ 0.4886×0.5 + 1.0×0.5 = 0.7443."
+  },
+  "match_reasons": [
+    {
+      "match_type": "name_similarity",
+      "raw_contribution": 1.0,
+      "weighted_contribution": 1.0,
+      "signal_weight": 1.0,
+      "matched_value": null,
+      "entity_a_value": "suicide prevention hotlines",
+      "entity_b_value": "suicide prevention hotlines",
+      "similarity_score": 1.0,
+      "note": "Exact name match — the dominant signal (NLP section weight 0.40 → 0.50 normalised without ML)"
+    },
+    {
+      "match_type": "shared_email",
+      "raw_contribution": 1.0,
+      "weighted_contribution": 0.16,
+      "signal_weight": 0.16,
+      "matched_value": "intake@riverbend.example.org",
+      "entity_a_value": "intake@riverbend.example.org",
+      "entity_b_value": "intake@riverbend.example.org",
+      "similarity_score": null,
+      "note": "Same Riverbend coordinator email on both records"
+    },
+    {
+      "match_type": "shared_taxonomy",
+      "raw_contribution": 1.0,
+      "weighted_contribution": 0.12,
+      "signal_weight": 0.12,
+      "matched_value": "rp-1500.1400-800",
+      "entity_a_value": "rp-1500.1400-800",
+      "entity_b_value": "rp-1500.1400-800",
+      "similarity_score": 1.0,
+      "note": "Both tagged with HSIS Suicide Prevention Hotlines taxonomy code"
+    },
+    {
+      "match_type": "shared_phone",
+      "raw_contribution": 0.5,
+      "weighted_contribution": 0.11,
+      "signal_weight": 0.22,
+      "matched_value": "988",
+      "entity_a_value": "555-010-7740, 988",
+      "entity_b_value": "555-010-5000, 988",
+      "similarity_score": null,
+      "note": "Both list the national 988 hotline; each has a distinct local line (Westfield vs Eastfield). Partial match raw=0.5 because only one of two phones overlaps."
+    },
+    {
+      "match_type": "shared_domain",
+      "raw_contribution": 1.0,
+      "weighted_contribution": 0.04,
+      "signal_weight": 0.04,
+      "matched_value": "riverbend.example.org",
+      "entity_a_value": "riverbend.example.org",
+      "entity_b_value": "riverbend.example.org",
+      "similarity_score": null,
+      "note": "Both websites hosted on riverbend.example.org"
+    }
+  ],
+  "entity_a": {
+    "entity_id": "aaaaaaaa-0000-4000-8000-00000000000a",
+    "original_id": "A-1",
+    "name": "Suicide Prevention Hotlines",
+    "organization_name": "RIVERBEND BEHAVIORAL HEALTH",
+    "description": "Provides a 24-hour suicide prevention hotline.",
+    "emails": [
+      "intake@riverbend.example.org"
+    ],
+    "phones": [
+      "555-010-7740",
+      "988"
+    ],
+    "websites": [
+      "https://www.riverbend.example.org"
+    ],
+    "taxonomies": [
+      {
+        "code": "rp-1500.1400-800",
+        "name": "Suicide Prevention Hotlines",
+        "taxonomy_system_name": "HSIS"
+      }
+    ],
+    "locations": [
+      {
+        "location_id": "aaaaaaaa-0000-4000-8000-0000000000a1",
+        "name": "Riverbend Behavioral Health - Westfield Clinic",
+        "address_1": "100 Example Way",
+        "city": "Westfield",
+        "state": "ZZ",
+        "postal_code": "00101",
+        "url": "https://www.riverbend.example.org"
+      }
+    ]
+  },
+  "entity_b": {
+    "entity_id": "bbbbbbbb-0000-4000-8000-00000000000b",
+    "original_id": "B-1",
+    "name": "Suicide Prevention Hotlines",
+    "organization_name": "RIVERBEND BEHAVIORAL HEALTH",
+    "description": "Provides a 24-hour suicide prevention hotline.",
+    "emails": [
+      "intake@riverbend.example.org"
+    ],
+    "phones": [
+      "555-010-5000",
+      "988"
+    ],
+    "websites": [
+      "https://www.riverbend.example.org"
+    ],
+    "taxonomies": [
+      {
+        "code": "rp-1500.1400-800",
+        "name": "Suicide Prevention Hotlines",
+        "taxonomy_system_name": "HSIS"
+      }
+    ],
+    "locations": [
+      {
+        "location_id": "bbbbbbbb-0000-4000-8000-0000000000b1",
+        "name": "Riverbend Behavioral Health - Eastfield Clinic",
+        "address_1": "200 Sample Road",
+        "city": "Eastfield",
+        "state": "ZZ",
+        "postal_code": "00102",
+        "url": "https://www.riverbend.example.org"
+      }
+    ]
+  }
+}

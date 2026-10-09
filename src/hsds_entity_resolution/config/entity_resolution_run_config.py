@@ -245,8 +245,7 @@ class FeatureOverrideConfig(BaseStrictModel):
         )
         if unsupported_exemptions:
             message = (
-                "Unsupported embedding floor exemption signal names: "
-                f"{unsupported_exemptions!r}"
+                f"Unsupported embedding floor exemption signal names: {unsupported_exemptions!r}"
             )
             raise ValueError(message)
         unsupported_review_overrides = sorted(
@@ -254,8 +253,7 @@ class FeatureOverrideConfig(BaseStrictModel):
         )
         if unsupported_review_overrides:
             message = (
-                "Unsupported review_on_signals signal names: "
-                f"{unsupported_review_overrides!r}"
+                f"Unsupported review_on_signals signal names: {unsupported_review_overrides!r}"
             )
             raise ValueError(message)
         if (
@@ -503,9 +501,7 @@ def _build_deterministic_defaults(*, entity_type: EntityType) -> DeterministicCo
             shared_taxonomy=DeterministicSignalConfig(weight=0.08),
             shared_address=DeterministicSignalConfig(weight=0.25),
             address_plus_taxonomy=DeterministicSignalConfig(enabled=False, weight=0.0),
-            address_plus_taxonomy_plus_contact=DeterministicSignalConfig(
-                enabled=False, weight=0.0
-            ),
+            address_plus_taxonomy_plus_contact=DeterministicSignalConfig(enabled=False, weight=0.0),
             shared_identifier=DeterministicSignalConfig(weight=0.25),
             organization_name_similarity=DeterministicSignalConfig(enabled=False, weight=0.0),
         )

@@ -5,19 +5,16 @@ from __future__ import annotations
 import math
 
 import polars as pl
-import pytest
 
-import hsds_entity_resolution.core.score_candidates as score_candidates_module
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.score_candidates import score_candidates
 from hsds_entity_resolution.core.score_candidates_sharded import (
     merge_score_candidates_results,
-    partition_candidate_pairs_for_sharding,
     partition_candidate_pairs_for_service_sharding,
+    partition_candidate_pairs_for_sharding,
 )
 from hsds_entity_resolution.types.contracts import ScoreCandidatesResult
 from hsds_entity_resolution.types.frames import PAIR_REASONS_SCHEMA, SCORED_PAIRS_SCHEMA
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -153,7 +150,7 @@ class TestPartitionCandidatePairsForSharding:
 
     def test_every_pair_key_in_exactly_one_shard(self) -> None:
         pair_dicts = [
-            _org_candidate_pair(f"org-{i:03d}", f"org-{i+1:03d}") for i in range(0, 40, 2)
+            _org_candidate_pair(f"org-{i:03d}", f"org-{i + 1:03d}") for i in range(0, 40, 2)
         ]
         candidates = _build_candidate_frame(pair_dicts)
         shards = partition_candidate_pairs_for_sharding(candidates, num_shards=4)
@@ -166,7 +163,8 @@ class TestPartitionCandidatePairsForSharding:
         """Unlike the service variant, org rows must NOT all pile up in shard 0."""
         n_pairs = 40
         pair_dicts = [
-            _org_candidate_pair(f"org-{i:03d}", f"org-{i+1:03d}") for i in range(0, n_pairs * 2, 2)
+            _org_candidate_pair(f"org-{i:03d}", f"org-{i + 1:03d}")
+            for i in range(0, n_pairs * 2, 2)
         ]
         candidates = _build_candidate_frame(pair_dicts)
         shards = partition_candidate_pairs_for_sharding(candidates, num_shards=4)
@@ -178,7 +176,8 @@ class TestPartitionCandidatePairsForSharding:
     def test_distribution_is_balanced(self) -> None:
         n_pairs, n_shards = 100, 4
         pair_dicts = [
-            _org_candidate_pair(f"org-{i:04d}", f"org-{i+1:04d}") for i in range(0, n_pairs * 2, 2)
+            _org_candidate_pair(f"org-{i:04d}", f"org-{i + 1:04d}")
+            for i in range(0, n_pairs * 2, 2)
         ]
         candidates = _build_candidate_frame(pair_dicts)
         shards = partition_candidate_pairs_for_sharding(candidates, num_shards=n_shards)
@@ -251,7 +250,7 @@ class TestPartitionCandidatePairsForServiceSharding:
 
     def test_every_pair_key_appears_in_exactly_one_shard(self) -> None:
         pair_dicts = [
-            _svc_candidate_pair(f"svc-{i:03d}", f"svc-{i+1:03d}") for i in range(0, 40, 2)
+            _svc_candidate_pair(f"svc-{i:03d}", f"svc-{i + 1:03d}") for i in range(0, 40, 2)
         ]
         candidates = _build_candidate_frame(pair_dicts)
         shards = partition_candidate_pairs_for_service_sharding(candidates, num_shards=4)
@@ -263,7 +262,7 @@ class TestPartitionCandidatePairsForServiceSharding:
         assert sorted(all_keys_seen) == sorted(candidates.get_column("pair_key").to_list())
 
     def test_org_rows_always_land_in_shard_zero(self) -> None:
-        svc_pairs = [_svc_candidate_pair(f"svc-{i}", f"svc-{i+1}") for i in range(0, 10, 2)]
+        svc_pairs = [_svc_candidate_pair(f"svc-{i}", f"svc-{i + 1}") for i in range(0, 10, 2)]
         org_pairs = [
             _org_candidate_pair("org-a", "org-b"),
             _org_candidate_pair("org-c", "org-d"),
@@ -283,7 +282,7 @@ class TestPartitionCandidatePairsForServiceSharding:
 
     def test_shard_count_matches_num_shards(self) -> None:
         candidates = _build_candidate_frame(
-            [_svc_candidate_pair(f"svc-{i}", f"svc-{i+1}") for i in range(0, 20, 2)]
+            [_svc_candidate_pair(f"svc-{i}", f"svc-{i + 1}") for i in range(0, 20, 2)]
         )
         for n in [2, 4, 8]:
             shards = partition_candidate_pairs_for_service_sharding(candidates, num_shards=n)
@@ -294,7 +293,8 @@ class TestPartitionCandidatePairsForServiceSharding:
         n_pairs = 100
         n_shards = 4
         pair_dicts = [
-            _svc_candidate_pair(f"svc-{i:04d}", f"svc-{i+1:04d}") for i in range(0, n_pairs * 2, 2)
+            _svc_candidate_pair(f"svc-{i:04d}", f"svc-{i + 1:04d}")
+            for i in range(0, n_pairs * 2, 2)
         ]
         candidates = _build_candidate_frame(pair_dicts)
         shards = partition_candidate_pairs_for_service_sharding(candidates, num_shards=n_shards)
@@ -373,11 +373,13 @@ class TestMergeScoreCandidatesResults:
         svc_entities = _build_svc_entity_frame(
             ["svc-a", "svc-b", "svc-c", "svc-d", "svc-e", "svc-f"]
         )
-        pairs_full = _build_candidate_frame([
-            _svc_candidate_pair("svc-a", "svc-b"),
-            _svc_candidate_pair("svc-c", "svc-d"),
-            _svc_candidate_pair("svc-e", "svc-f"),
-        ])
+        pairs_full = _build_candidate_frame(
+            [
+                _svc_candidate_pair("svc-a", "svc-b"),
+                _svc_candidate_pair("svc-c", "svc-d"),
+                _svc_candidate_pair("svc-e", "svc-f"),
+            ]
+        )
         shards = partition_candidate_pairs_for_service_sharding(pairs_full, num_shards=3)
         shard_results = [
             score_candidates(
@@ -463,7 +465,11 @@ class TestShardsMatchMonolithicRun:
 
         shards = partition_candidate_pairs_for_service_sharding(all_pairs, num_shards=4)
         # Org rows must be in shard 0
-        shard_0_types = set(shards[0].get_column("entity_type").to_list()) if not shards[0].is_empty() else set()
+        shard_0_types = (
+            set(shards[0].get_column("entity_type").to_list())
+            if not shards[0].is_empty()
+            else set()
+        )
         assert "organization" in shard_0_types or all(
             "organization" not in set(s.get_column("entity_type").to_list())
             for s in shards[1:]

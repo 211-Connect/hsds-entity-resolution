@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import polars as pl
 import pytest
 
@@ -558,23 +560,10 @@ def test_generate_candidates_keeps_taxonomy_plus_domain_overlap_for_email_and_we
 
 
 def test_generate_candidates_logs_blocking_overview_summary(
-    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Generate-candidates should emit one info summary for coarse blocking tuning."""
-
-    class _FakeLogger:
-        def __init__(self) -> None:
-            self.info_messages: list[str] = []
-            self.debug_messages: list[str] = []
-
-        def info(self, message: str, *args: object) -> None:
-            self.info_messages.append(message % args if args else message)
-
-        def debug(self, message: str, *args: object) -> None:
-            self.debug_messages.append(message % args if args else message)
-
-    logger = _FakeLogger()
-    monkeypatch.setattr(generate_candidates_module, "get_dagster_logger", lambda: logger)
+    caplog.set_level(logging.INFO, logger=generate_candidates_module.__name__)
 
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-overview",
@@ -627,8 +616,13 @@ def test_generate_candidates_logs_blocking_overview_summary(
         explicit_backfill=False,
     )
 
-    assert logger.info_messages
-    overview_message = logger.info_messages[-1]
+    info_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == generate_candidates_module.__name__ and record.levelno == logging.INFO
+    ]
+    assert info_messages
+    overview_message = info_messages[-1]
     assert overview_message.startswith("ℹ️ generate_candidates_overview")
     assert "threshold=0.750" in overview_message
     assert "max_candidates_per_entity=1" in overview_message

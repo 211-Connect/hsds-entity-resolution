@@ -1175,9 +1175,8 @@ def test_score_candidates_exact_phone_overlap_is_binary_when_one_side_has_many_p
         config=config,
     )
 
-    phone_reason = (
-        result.pair_reasons.filter(pl.col("match_type") == "shared_phone")
-        .row(0, named=True)
+    phone_reason = result.pair_reasons.filter(pl.col("match_type") == "shared_phone").row(
+        0, named=True
     )
     assert phone_reason["raw_contribution"] == pytest.approx(1.0)
 

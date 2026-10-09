@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import polars as pl
-from dagster import get_dagster_logger
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.apply_mitigation import apply_mitigation
@@ -82,7 +82,7 @@ def run_incremental(
     score_shards: int = 1,
 ) -> IncrementalRunResult:
     """Run all incremental stages and return typed artifacts for downstream consumers."""
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
         emit_info=_log.info,
         emit_debug=_log.debug,
@@ -311,7 +311,7 @@ def run_incremental_until_candidates(
     disk and used as the shared input for per-shard scoring ops, avoiding
     redundant clean/generate work across shards.
     """
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
         emit_info=_log.info,
         emit_debug=_log.debug,
@@ -388,7 +388,7 @@ def run_incremental_until_clean_entities(
     ``generate_candidates`` with a disjoint anchor subset, avoiding redundant
     entity-cleaning work across shards.
     """
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
         emit_info=_log.info,
         emit_debug=_log.debug,
@@ -452,7 +452,7 @@ def run_incremental_after_scored(
     as :func:`run_incremental` so the consumer mapper and carry-forward logic
     can be applied unchanged.
     """
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
         emit_info=_log.info,
         emit_debug=_log.debug,

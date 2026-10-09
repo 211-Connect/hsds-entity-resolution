@@ -38,8 +38,7 @@ def partition_candidate_pairs_for_sharding(
         (pl.col("pair_key").hash() % num_shards).alias("_shard_id")
     )
     return [
-        with_shard.filter(pl.col("_shard_id") == i).drop("_shard_id")
-        for i in range(num_shards)
+        with_shard.filter(pl.col("_shard_id") == i).drop("_shard_id") for i in range(num_shards)
     ]
 
 
@@ -81,8 +80,7 @@ def partition_candidate_pairs_for_service_sharding(
     )
 
     return [
-        with_shard.filter(pl.col("_shard_id") == i).drop("_shard_id")
-        for i in range(num_shards)
+        with_shard.filter(pl.col("_shard_id") == i).drop("_shard_id") for i in range(num_shards)
     ]
 
 

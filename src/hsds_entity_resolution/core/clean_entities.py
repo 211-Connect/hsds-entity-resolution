@@ -9,10 +9,10 @@ candidate generation and scoring.
 from __future__ import annotations
 
 import json
+import logging
 from typing import cast
 
 import polars as pl
-from dagster import get_dagster_logger
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.dataframe_utils import (
@@ -182,7 +182,7 @@ def _log_clean_sample(*, rows: list[CleanEntityRow], entity_type: str) -> None:
     """
     if not rows:
         return
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     sample_lines: list[str] = []
     for row in rows[:3]:
         tax_list = row.get("taxonomies") or []
