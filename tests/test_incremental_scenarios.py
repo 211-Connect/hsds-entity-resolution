@@ -139,7 +139,6 @@ def _scored_pair_row(
         "model_version": "m",
         "deterministic_section_score": final_score,
         "nlp_section_score": final_score,
-        "ml_section_score": None,
         "final_score": final_score,
         "predicted_duplicate": predicted_duplicate,
         "embedding_similarity": embedding_similarity,
@@ -222,10 +221,9 @@ def _assert_not_removed(result: Any, pair_key: str) -> None:
 # Both entities share email + phone + website and use IDENTICAL names so that:
 #   - NLP fuzzy similarity = 1.0  →  clears fuzzy_threshold (0.88)
 #   - det_score = (email 0.22 + phone 0.20 + domain 0.08) / 1.00 = 0.50
-#   - pre_ml = 0.50×0.45 + 1.0×0.35 = 0.575  →  clears ml_gate_threshold (0.55)
-#   - ML fires via embedding_similarity ≈ 0.9997
-#   - final ≈ 0.575 + 0.9997×0.2 ≈ 0.775  →  below duplicate threshold unless
-#     stronger deterministic evidence such as address or identifier also matches
+#   - final = 0.50×0.5625 + 1.0×0.4375 ≈ 0.719  →  in the maybe band, below the
+#     duplicate threshold unless stronger deterministic evidence such as address
+#     or identifier also matches
 # ---------------------------------------------------------------------------
 
 _PAIR_KEY = "org-a__org-b"
@@ -372,7 +370,7 @@ def test_s1b_full_pipeline_entity_change_drops_score_emits_score_dropped() -> No
 
 
 def test_s1c_pair_demotes_from_duplicate_to_maybe_stays_retained() -> None:
-    """S1-C: A pair re-scoring in the soft-maybe band stays retained with predicted_duplicate False."""
+    """S1-C: A pair re-scoring in the soft-maybe band stays retained, not predicted duplicate."""
     config = _config(team_id="team-s1c", scope_id="s1c")
     previous_pair_state = pl.DataFrame([_pair_state_row(_PAIR_KEY, "org-a", "org-b", "s1c")])
 
@@ -415,7 +413,7 @@ def test_s1c_pair_demotes_from_duplicate_to_maybe_stays_retained() -> None:
 
 
 def test_s1d_maybe_pair_drops_below_maybe_emits_score_dropped() -> None:
-    """S1-D: A previously review-eligible pair that drops below low_maybe_threshold is score_dropped."""
+    """S1-D: A review-eligible pair that drops below low_maybe_threshold is score_dropped."""
     config = _config(team_id="team-s1d", scope_id="s1d")
     previous_pair_state = pl.DataFrame([_pair_state_row(_PAIR_KEY, "org-a", "org-b", "s1d")])
     # Score just below low_maybe_threshold (leaves the review queue entirely).
@@ -452,14 +450,16 @@ def test_s1e_entity_change_causes_candidate_lost() -> None:
     _assert_retained(run1, _PAIR_KEY)
 
     # Run 2: entity A changes its identifier (triggers content_hash change so
-    # candidates are re-generated) AND its embedding becomes orthogonal to B
-    # (cosine ≈ 0.0 < 0.75 blocking threshold → pair never generated).
+    # candidates are re-generated), its embedding becomes orthogonal to B
+    # (cosine ≈ 0.0 < 0.75 blocking threshold) AND it stops sharing contacts
+    # with B. Shared contacts seed a candidate on their own, so all three must
+    # change for the pair to stop being generated.
     entity_a_ortho = _entity_row(
         "org-a",
         "North Clinic",
-        emails=[_SHARED_EMAIL],
-        phones=[_SHARED_PHONE],
-        websites=[_SHARED_WEBSITE],
+        emails=["north@clinic-a.example.org"],
+        phones=["5550100001"],
+        websites=["https://clinic-a.example.org"],
         identifiers=[{"system": "npi", "value": "9999"}],
         embedding=_EMB_ORTHO,
     )
@@ -725,7 +725,6 @@ def _dup_pair(
         "model_version": "m",
         "deterministic_section_score": final_score,
         "nlp_section_score": final_score,
-        "ml_section_score": final_score,
         "final_score": final_score,
         "predicted_duplicate": True,
         "review_eligible": True,
@@ -751,7 +750,6 @@ def _maybe_pair(
         "model_version": "m",
         "deterministic_section_score": final_score,
         "nlp_section_score": final_score,
-        "ml_section_score": None,
         "final_score": final_score,
         "predicted_duplicate": False,
         "review_eligible": True,
@@ -1038,7 +1036,6 @@ def test_s3g_contradictory_triangle_limits_transitive_closure() -> None:
             "model_version": ["m", "m", "m"],
             "deterministic_section_score": [0.9, 0.9, 0.1],
             "nlp_section_score": [0.9, 0.9, 0.1],
-            "ml_section_score": [0.9, 0.9, 0.1],
             "final_score": [0.95, 0.94, 0.10],
             "predicted_duplicate": [True, True, False],
             "embedding_similarity": [0.95, 0.94, 0.10],
@@ -1112,7 +1109,7 @@ def test_s4a_duplicate_threshold_raised_pair_demotes_to_maybe() -> None:
 
 
 def test_s4b_maybe_threshold_raised_pair_emits_score_dropped() -> None:
-    """S4-B: Raising maybe_threshold (and low_maybe) clears pairs that fall out of all review bands."""
+    """S4-B: Raising maybe_threshold (and low_maybe) clears pairs that leave all review bands."""
     config = _config(team_id="team-s4b", scope_id="s4b")
     # Score sits in the soft-maybe band under the default thresholds.
     low_m = config.scoring.low_maybe_threshold

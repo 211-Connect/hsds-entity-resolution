@@ -18,7 +18,6 @@ def test_weight_sum_validation_rejects_invalid_configuration() -> None:
     ).model_dump()
     payload["scoring"]["deterministic_section_weight"] = 0.9
     payload["scoring"]["nlp_section_weight"] = 0.9
-    payload["scoring"]["ml_section_weight"] = 0.9
 
     with pytest.raises(ValueError, match="Section weights"):
         _ = EntityResolutionRunConfig.model_validate(payload)
@@ -215,3 +214,94 @@ def test_chunking_rejects_zero_sizes() -> None:
 
     with pytest.raises(ValueError):
         _ = EntityResolutionRunConfig.model_validate(payload)
+
+
+def _org_payload() -> dict[str, object]:
+    """Return a mutable default organization config payload."""
+    return EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team",
+        scope_id="scope",
+        entity_type="organization",
+    ).model_dump()
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("ml", {"ml_enabled": False}),
+        ("calibration", {"enabled": True}),
+        ("ml_section_weight", 0.0),
+    ],
+)
+def test_scoring_rejects_removed_ml_keys_with_migration_message(key: str, value: object) -> None:
+    """Configs written for the removed ML section fail with a message naming the change."""
+    payload = _org_payload()
+    scoring = payload["scoring"]
+    assert isinstance(scoring, dict)
+    scoring[key] = value
+
+    with pytest.raises(ValueError, match=r"ML scoring section was removed in .*1\.2\.0") as info:
+        _ = EntityResolutionRunConfig.model_validate(payload)
+    assert key in str(info.value)
+
+
+@pytest.mark.parametrize("key", ["ml_section_weight", "ml_gate_threshold"])
+def test_pair_rule_overrides_reject_removed_ml_keys(key: str) -> None:
+    """Pair-rule feature overrides carrying ML keys fail with the migration message."""
+    payload = _org_payload()
+    payload["source_policy"] = {
+        "source_profiles": {"P": {"source_schemas": ["S"]}},
+        "pair_rules": [
+            {
+                "rule_id": "r",
+                "source_profiles": ["P"],
+                "feature_overrides": {
+                    "deterministic_section_weight": 0.5,
+                    "nlp_section_weight": 0.5,
+                    key: 0.0,
+                },
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match=r"ML scoring section was removed"):
+        _ = EntityResolutionRunConfig.model_validate(payload)
+
+
+def test_pair_rule_section_weights_must_sum_to_one() -> None:
+    """Two-section overrides are validated together and must sum to one."""
+    payload = _org_payload()
+    payload["source_policy"] = {
+        "source_profiles": {"P": {"source_schemas": ["S"]}},
+        "pair_rules": [
+            {
+                "rule_id": "r",
+                "source_profiles": ["P"],
+                "feature_overrides": {
+                    "deterministic_section_weight": 0.6,
+                    "nlp_section_weight": 0.3,
+                },
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="Section weights must sum to 1.0"):
+        _ = EntityResolutionRunConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("entity_type", "previous_det", "previous_nlp"),
+    [("organization", 0.45, 0.35), ("service", 0.40, 0.40)],
+)
+def test_default_section_weights_renormalise_previous_active_weights(
+    entity_type: str, previous_det: float, previous_nlp: float
+) -> None:
+    """Defaults equal the pre-1.2.0 det/NLP weights renormalised without ML."""
+    config = EntityResolutionRunConfig.defaults_for_entity_type(
+        team_id="team",
+        scope_id="scope",
+        entity_type=entity_type,  # type: ignore[arg-type]
+    )
+    active = previous_det + previous_nlp
+    assert config.scoring.deterministic_section_weight == pytest.approx(previous_det / active)
+    assert config.scoring.nlp_section_weight == pytest.approx(previous_nlp / active)

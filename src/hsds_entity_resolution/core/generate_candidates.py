@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 import polars as pl
-from dagster import get_dagster_logger
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.dataframe_utils import (
@@ -209,10 +209,11 @@ def _generate_for_entity_type(
         extra_row_count = int(duplicate_rows.select((pl.col("row_count") - 1).sum()).item())
         raise ValueError(
             f"Duplicate {entity_type} entity rows before candidate generation: "
-            f"{duplicate_rows.height} entity_ids have extra rows ({extra_row_count} extra rows total). "
+            f"{duplicate_rows.height} entity_ids have extra rows "
+            f"({extra_row_count} extra rows total). "
             f"Examples: {example_text}{suffix}. "
-            "Fix upstream in DEDUPLICATION.ER_STAGING (STG_SERVICE_DENORMALIZED / "
-            "STG_ORGANIZATION_DENORMALIZED); do not dedupe silently in generate_candidates."
+            "Fix the duplicate rows in the caller's entity input; "
+            "generate_candidates does not dedupe silently."
         )
     changed_ids = set(
         changed_entities.filter(pl.col("entity_type") == entity_type)
@@ -336,9 +337,8 @@ def _collect_candidate_records(
         )
         chunk_ids = sorted_changed_ids[chunk_start:chunk_end]
         if anchor_chunk_size is not None:
-            get_dagster_logger().info(
-                "ℹ️ generate_anchor_chunk entity_type=%s chunk=%d-%d/%d "
-                "pairs_so_far=%d rss_gb=%.2f",
+            logging.getLogger(__name__).info(
+                "ℹ️ generate_anchor_chunk entity_type=%s chunk=%d-%d/%d pairs_so_far=%d rss_gb=%.2f",
                 entity_type,
                 chunk_start + 1,
                 chunk_end,
@@ -477,7 +477,7 @@ def _collect_contact_overlap_candidates(
         )
         chunk_ids = sorted_changed_ids[chunk_start:chunk_end]
         if anchor_chunk_size is not None:
-            get_dagster_logger().info(
+            logging.getLogger(__name__).info(
                 "ℹ️ contact_overlap_chunk entity_type=%s chunk=%d-%d/%d "
                 "pairs_so_far=%d generated=%d rss_gb=%.2f",
                 entity_type,
@@ -519,9 +519,7 @@ def _collect_contact_overlap_candidates(
                 if pair_key in seen_pair_keys:
                     continue
                 seen_pair_keys.add(pair_key)
-                similarity = float(
-                    normalized_matrix[candidate_idx] @ normalized_matrix[anchor_idx]
-                )
+                similarity = float(normalized_matrix[candidate_idx] @ normalized_matrix[anchor_idx])
                 record = _to_candidate_record(
                     anchor=anchor,
                     candidate=candidate,
@@ -538,7 +536,7 @@ def _collect_contact_overlap_candidates(
             break
 
     if anchors_hit_pair_cap or index_keys_truncated:
-        get_dagster_logger().warning(
+        logging.getLogger(__name__).warning(
             "⚠️ contact_overlap_caps_hit entity_type=%s anchors_pair_cap=%d "
             "index_keys_truncated=%d max_pairs_per_anchor=%s max_index_fanout=%s",
             entity_type,
@@ -548,7 +546,7 @@ def _collect_contact_overlap_candidates(
             max_index_fanout,
         )
     if generated:
-        get_dagster_logger().info(
+        logging.getLogger(__name__).info(
             "ℹ️ contact_overlap_candidates entity_type=%s generated=%d",
             entity_type,
             generated,
@@ -947,7 +945,7 @@ def _log_entity_sample(
     precomputed_schemas: list[str] | None = None,
 ) -> None:
     """Emit a DEBUG snapshot of the first 3 entity rows to verify denormalized field population."""
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     sample = entity_rows[:3]
     schemas = precomputed_schemas or sorted(
         {str(r.get("source_schema") or "?") for r in entity_rows}
@@ -1012,7 +1010,7 @@ def _log_blocking_summary(
     contact_overlap_generated: int,
 ) -> None:
     """Emit a single DEBUG summary of the full blocking pass — never called inside a loop."""
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     channel_hits_str = " ".join(f"{ch}={channel_hits.get(ch, 0)}" for ch in overlap_channels)
     sample_lines = "\n".join(
         f"  [{i + 1}] sim={s['sim']} cand_schema={s['cand_schema']}"
@@ -1054,7 +1052,7 @@ def _log_generate_candidates_overview(
     config: EntityResolutionRunConfig,
 ) -> None:
     """Emit one INFO-level overview for coarse blocking-tuning evaluation."""
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     threshold = config.blocking.similarity_threshold
     max_per_entity = config.blocking.max_candidates_per_entity
     totals = _aggregate_blocking_overview_metrics(overviews=overviews)

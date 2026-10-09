@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
-from math import exp
 from typing import Any
 
 import polars as pl
-from dagster import get_dagster_logger
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.dataframe_utils import (
@@ -18,7 +17,6 @@ from hsds_entity_resolution.core.dataframe_utils import (
 )
 from hsds_entity_resolution.core.domain_utils import domain_overlap_score, extract_contact_domains
 from hsds_entity_resolution.core.evidence_policy import is_contributing_evidence
-from hsds_entity_resolution.core.ml_inference import score_pairs_with_model, to_legacy_entity
 from hsds_entity_resolution.core.nlp import compute_nlp_score
 from hsds_entity_resolution.core.nlp.algorithms import (
     resolve_fuzzy_similarity,
@@ -39,7 +37,6 @@ from hsds_entity_resolution.core.taxonomy_utils import (
     extract_entity_taxonomy_codes,
     taxonomy_hierarchy_levels,
 )
-from hsds_entity_resolution.core.training_features import build_signal_overrides_from_reason_sets
 from hsds_entity_resolution.observability import IncrementalProgressLogger
 from hsds_entity_resolution.types.contracts import ScoreCandidatesResult
 from hsds_entity_resolution.types.frames import PAIR_REASONS_SCHEMA, SCORED_PAIRS_SCHEMA
@@ -63,16 +60,15 @@ class ScoredPairRecord:
 
 
 @dataclass(frozen=True)
-class PreMlPairRecord:
-    """Intermediate pair score payload before optional ML inference."""
+class SectionScoredPair:
+    """Deterministic and NLP section scores for one pair, before thresholding."""
 
     candidate: dict[str, Any]
     det_score: float
     nlp_score: float
-    pre_ml_score: float
     det_reasons: list[dict[str, Any]]
     nlp_reasons: list[dict[str, Any]]
-    policy: EffectiveScoringPolicy | None = None
+    policy: EffectiveScoringPolicy
 
 
 def score_candidates(
@@ -81,7 +77,6 @@ def score_candidates(
     denormalized_organization: pl.DataFrame,
     denormalized_service: pl.DataFrame,
     config: EntityResolutionRunConfig,
-    taxonomy_embeddings: dict[str, list[float]] | None = None,
     progress_logger: IncrementalProgressLogger | None = None,
 ) -> ScoreCandidatesResult:
     """Score candidate pairs and emit explainability reasons."""
@@ -96,12 +91,8 @@ def score_candidates(
     chunk_size = config.chunking.score_candidate_chunk_size
     effective_chunk_size = chunk_size if chunk_size is not None else total_pairs
     if progress_logger is not None:
-        progress_logger.stage_started(
-            stage="score_candidates.pre_score_pairs", total=total_pairs
-        )
-        progress_logger.stage_started(
-            stage="score_candidates.finalize_pairs", total=total_pairs
-        )
+        progress_logger.stage_started(stage="score_candidates.pre_score_pairs", total=total_pairs)
+        progress_logger.stage_started(stage="score_candidates.finalize_pairs", total=total_pairs)
 
     scored_records: list[ScoredPairRecord] = []
     processed = 0
@@ -109,16 +100,16 @@ def score_candidates(
         chunk_end = min(chunk_start + effective_chunk_size, total_pairs)
         chunk_rows = candidate_pairs.slice(chunk_start, chunk_end - chunk_start).to_dicts()
         if chunk_size is not None:
-            get_dagster_logger().info(
+            logging.getLogger(__name__).info(
                 "ℹ️ score_candidate_chunk chunk=%d-%d/%d rss_gb=%.2f",
                 chunk_start + 1,
                 chunk_end,
                 total_pairs,
                 _rss_gb(),
             )
-        pre_ml_records: list[PreMlPairRecord] = []
+        section_records: list[SectionScoredPair] = []
         for row in chunk_rows:
-            pre_ml_records.append(
+            section_records.append(
                 _pre_score_pair(candidate=row, entity_lookup=entity_lookup, config=config)
             )
             processed += 1
@@ -128,25 +119,16 @@ def score_candidates(
                     processed=processed,
                     total=total_pairs,
                 )
-        model_scores = _score_ml_subset(
-            pre_ml_records=pre_ml_records,
-            entity_lookup=entity_lookup,
-            config=config,
-            taxonomy_embeddings=taxonomy_embeddings,
-        )
-        for index, record in enumerate(pre_ml_records, start=1):
-            scored_records.append(
-                _finalize_pair(record=record, config=config, model_scores=model_scores)
-            )
+        for index, record in enumerate(section_records, start=1):
+            scored_records.append(_finalize_pair(record=record, config=config))
             if progress_logger is not None:
                 progress_logger.stage_advanced(
                     stage="score_candidates.finalize_pairs",
                     processed=chunk_start + index,
                     total=total_pairs,
                 )
-        del pre_ml_records
+        del section_records
         del chunk_rows
-        del model_scores
 
     if progress_logger is not None:
         progress_logger.stage_completed(
@@ -163,16 +145,12 @@ def score_candidates(
     _log_signal_band_diagnostics(
         scored_pairs=scored_pairs, pair_reasons=pair_reasons, config=config
     )
-    _log_shadow_confidence_diagnostics(scored_pairs=scored_pairs, pair_reasons=pair_reasons)
     strict_dup = scored_pairs.filter(
         pl.col("final_score") >= pl.col("effective_duplicate_threshold")
     ).height
     summary = pl.DataFrame(
         {
             "candidates_scored": [scored_pairs.height],
-            "ml_scored_count": [
-                scored_pairs.filter(pl.col("ml_section_score").is_not_null()).height
-            ],
             "duplicate_count": [scored_pairs.filter(pl.col("pair_outcome") == "duplicate").height],
             "maybe_count": [scored_pairs.filter(pl.col("pair_outcome") == "maybe").height],
             "strict_duplicate_count": [strict_dup],
@@ -235,8 +213,8 @@ def _pre_score_pair(
     candidate: dict[str, Any],
     entity_lookup: dict[tuple[str, str], dict[str, Any]],
     config: EntityResolutionRunConfig,
-) -> PreMlPairRecord:
-    """Compute deterministic/NLP sections and ML gate prerequisites."""
+) -> SectionScoredPair:
+    """Compute the deterministic and NLP sections for one candidate pair."""
     entity_type = candidate["entity_type"]
     left = entity_lookup[(entity_type, candidate["entity_a_id"])]
     right = entity_lookup[(entity_type, candidate["entity_b_id"])]
@@ -277,137 +255,30 @@ def _pre_score_pair(
         if "name_similarity" in policy.suppressed_signals:
             nlp_score = 0.0
             nlp_reasons = []
-    pre_ml_score = _compose_pre_ml_score(
-        det_score=det_score,
-        nlp_score=nlp_score,
-        config=config,
-        policy=policy,
-    )
-    return PreMlPairRecord(
+    return SectionScoredPair(
         candidate=candidate,
         det_score=det_score,
         nlp_score=nlp_score,
-        pre_ml_score=pre_ml_score,
         det_reasons=det_reasons,
         nlp_reasons=nlp_reasons,
         policy=policy,
     )
 
 
-def _score_ml_subset(
-    *,
-    pre_ml_records: list[PreMlPairRecord],
-    entity_lookup: dict[tuple[str, str], dict[str, Any]],
-    config: EntityResolutionRunConfig,
-    taxonomy_embeddings: dict[str, list[float]] | None = None,
-) -> dict[str, float]:
-    """Run model inference for gated pairs, grouped by entity type."""
-    if not config.scoring.ml.ml_enabled:
-        return {}
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for record in pre_ml_records:
-        policy = _policy_for_record(record=record, config=config)
-        scoring_values = effective_scoring_values(
-            scoring=config.scoring,
-            overrides=policy.feature_overrides,
-        )
-        if record.pre_ml_score < scoring_values["ml_gate_threshold"]:
-            continue
-        candidate = record.candidate
-        entity_type = candidate["entity_type"]
-        left = entity_lookup[(entity_type, candidate["entity_a_id"])]
-        right = entity_lookup[(entity_type, candidate["entity_b_id"])]
-        payload = {
-            "pair_key": candidate["pair_key"],
-            "embedding_similarity": candidate["embedding_similarity"],
-            "entity_a": to_legacy_entity(row=left),
-            "entity_b": to_legacy_entity(row=right),
-            "signal_overrides": _extract_signal_overrides(record=record),
-        }
-        grouped.setdefault(entity_type, []).append(payload)
-    scores: dict[str, float] = {}
-    for entity_type, pairs in grouped.items():
-        scores.update(
-            score_pairs_with_model(
-                pairs=pairs,
-                entity_type=entity_type,
-                taxonomy_embeddings=taxonomy_embeddings,
-            )
-        )
-    return scores
-
-
-def _extract_signal_overrides(*, record: PreMlPairRecord) -> dict[str, float]:
-    """Build ML feature overrides from pre-computed deterministic and NLP signals.
-
-    Three features in SERVICE_FEATURES — fuzzy_name, shared_address, and shared_phone —
-    are not produced by FeatureExtractor.extract_features(). In the original pipeline
-    they were deterministic/NLP signals merged into the feature dict by the ensemble
-    before calling the model. This function reconstructs that merge from the reasons
-    already computed during the pre-ML scoring step.
-    """
-    return build_signal_overrides_from_reason_sets(
-        det_reasons=record.det_reasons,
-        nlp_reasons=record.nlp_reasons,
-        nlp_score=record.nlp_score,
-    )
-
-
-def _policy_for_record(
-    *,
-    record: PreMlPairRecord,
-    config: EntityResolutionRunConfig,
-) -> EffectiveScoringPolicy:
-    """Return explicit record policy or the default fallback for compatibility tests."""
-    if record.policy is not None:
-        return record.policy
-    candidate = record.candidate
-    return resolve_scoring_policy(
-        config=config,
-        context=PairPolicyContext(
-            entity_type=str(candidate["entity_type"]),
-            source_schema_a=str(candidate.get("source_schema_a") or ""),
-            source_schema_b=str(candidate.get("source_schema_b") or ""),
-        ),
-    )
-
-
 def _finalize_pair(
     *,
-    record: PreMlPairRecord,
+    record: SectionScoredPair,
     config: EntityResolutionRunConfig,
-    model_scores: dict[str, float],
 ) -> ScoredPairRecord:
     """Finalize candidate score and build explainability reasons."""
     candidate = record.candidate
     entity_type = candidate["entity_type"]
-    policy = _policy_for_record(record=record, config=config)
-    ml_score = _ml_score(
-        candidate=candidate,
-        pre_ml_score=record.pre_ml_score,
-        config=config,
-        model_scores=model_scores,
-        policy=policy,
-    )
+    policy = record.policy
     final_score = _final_score(
         det_score=record.det_score,
         nlp_score=record.nlp_score,
-        ml_score=ml_score,
         config=config,
         policy=policy,
-    )
-    legacy_confidence_score = final_score
-    shadow_log_odds = _shadow_log_odds(
-        det_reasons=record.det_reasons,
-        nlp_score=record.nlp_score,
-        ml_score=ml_score,
-        config=config,
-        policy=policy,
-    )
-    shadow_confidence_score = _shadow_confidence(
-        shadow_log_odds=shadow_log_odds,
-        legacy_confidence_score=legacy_confidence_score,
-        config=config,
     )
     pair_outcome = classify_pair_outcome(
         final_score=final_score,
@@ -426,12 +297,10 @@ def _finalize_pair(
         reasons=[*record.det_reasons, *record.nlp_reasons],
         policy=policy,
     )
-    reasons = [*record.det_reasons, *record.nlp_reasons]
-    if ml_score is not None:
-        ml_reason = _ml_reason(ml_score=ml_score, config=config, policy=policy)
-        if ml_reason is not None:
-            reasons.append(ml_reason)
-    reasons = [{**reason, "pair_key": candidate["pair_key"]} for reason in reasons]
+    reasons = [
+        {**reason, "pair_key": candidate["pair_key"]}
+        for reason in [*record.det_reasons, *record.nlp_reasons]
+    ]
     row = {
         "pair_key": candidate["pair_key"],
         "entity_a_id": candidate["entity_a_id"],
@@ -443,12 +312,7 @@ def _finalize_pair(
         "model_version": config.metadata.model_version,
         "deterministic_section_score": record.det_score,
         "nlp_section_score": record.nlp_score,
-        "ml_section_score": ml_score,
         "final_score": final_score,
-        "legacy_confidence_score": legacy_confidence_score,
-        "shadow_confidence_score": shadow_confidence_score,
-        "shadow_log_odds": shadow_log_odds,
-        "calibration_version": config.scoring.calibration.calibration_version,
         "predicted_duplicate": predicted_duplicate,
         "pair_outcome": pair_outcome,
         "review_eligible": review_eligible,
@@ -508,7 +372,7 @@ def _has_embedding_floor_exemption(
         if match_type != _TAXONOMY_REASON_MATCH_TYPE:
             return True
         # Only exact or direct parent-child taxonomy evidence bypasses the
-        # WellSky semantic floor. Shallow same-root HSIS overlaps are not enough.
+        # embedding floor. Shallow same-root taxonomy overlaps are not enough.
         similarity_score = reason.get("similarity_score")
         if (
             similarity_score is not None
@@ -773,7 +637,7 @@ def _deterministic_score(
 
 def _log_scoring_configuration(*, config: EntityResolutionRunConfig) -> None:
     """Emit one INFO summary of active scoring semantics for this run scope."""
-    logger = get_dagster_logger()
+    logger = logging.getLogger(__name__)
     entity_type = config.metadata.entity_type
     deterministic_signals = [
         "shared_email",
@@ -788,11 +652,10 @@ def _log_scoring_configuration(*, config: EntityResolutionRunConfig) -> None:
     if entity_type == "organization":
         deterministic_signals.append("shared_identifier")
     logger.info(
-        "ℹ️ score_candidates_config entity_type=%s ml_enabled=%s"
+        "ℹ️ score_candidates_config entity_type=%s"
         " deterministic_signals=%s duplicate_threshold=%.2f maybe_threshold=%.2f"
         " low_maybe_threshold=%.2f score_candidate_chunk_size=%s",
         entity_type,
-        config.scoring.ml.ml_enabled,
         deterministic_signals,
         config.scoring.duplicate_threshold,
         config.scoring.maybe_threshold,
@@ -877,9 +740,12 @@ def _has_any_contact_overlap(
     if domain_raw > 0.0:
         return True
     for field in ("emails", "phones"):
-        if _overlap_details(left_values=left.get(field), right_values=right.get(field))[
-            "shared_value"
-        ] is not None:
+        if (
+            _overlap_details(left_values=left.get(field), right_values=right.get(field))[
+                "shared_value"
+            ]
+            is not None
+        ):
             return True
     return False
 
@@ -1120,7 +986,7 @@ def _nlp_score(
     return weighted, reasons
 
 
-def _compose_pre_ml_score(
+def _final_score(
     *,
     det_score: float,
     nlp_score: float,
@@ -1140,95 +1006,12 @@ def _compose_pre_ml_score(
     )
 
 
-def _ml_score(
-    *,
-    candidate: dict[str, Any],
-    pre_ml_score: float,
-    config: EntityResolutionRunConfig,
-    model_scores: dict[str, float],
-    policy: EffectiveScoringPolicy,
-) -> float | None:
-    """Resolve optional ML score from model output, with embedding fallback."""
-    if not config.scoring.ml.ml_enabled:
-        return None
-    scoring_values = effective_scoring_values(
-        scoring=config.scoring,
-        overrides=policy.feature_overrides,
-    )
-    if pre_ml_score < scoring_values["ml_gate_threshold"]:
-        return None
-    model_score = model_scores.get(candidate["pair_key"])
-    if model_score is not None:
-        return float(model_score)
-    return float(candidate["embedding_similarity"])
-
-
-def _final_score(
-    *,
-    det_score: float,
-    nlp_score: float,
-    ml_score: float | None,
-    config: EntityResolutionRunConfig,
-    policy: EffectiveScoringPolicy,
-) -> float:
-    """Compute final ensemble score for prediction thresholding."""
-    scoring_values = effective_scoring_values(
-        scoring=config.scoring,
-        overrides=policy.feature_overrides,
-    )
-    components: list[tuple[float | None, float]] = [
-        (det_score, scoring_values["deterministic_section_weight"]),
-        (nlp_score, scoring_values["nlp_section_weight"]),
-    ]
-    if ml_score is not None:
-        components.append((ml_score, scoring_values["ml_section_weight"]))
-    return _compose_weighted_score(components=components)
-
-
-def _shadow_log_odds(
-    *,
-    det_reasons: list[dict[str, Any]],
-    nlp_score: float,
-    ml_score: float | None,
-    config: EntityResolutionRunConfig,
-    policy: EffectiveScoringPolicy,
-) -> float:
-    """Compute shadow calibration log-odds from unsaturated additive evidence."""
-    scoring_values = effective_scoring_values(
-        scoring=config.scoring,
-        overrides=policy.feature_overrides,
-    )
-    deterministic_evidence = sum(float(reason["weighted_contribution"]) for reason in det_reasons)
-    nlp_evidence = scoring_values["nlp_section_weight"] * float(nlp_score)
-    ml_evidence = (
-        scoring_values["ml_section_weight"] * float(ml_score) if ml_score is not None else 0.0
-    )
-    return (
-        config.scoring.calibration.prior_log_odds
-        + deterministic_evidence
-        + nlp_evidence
-        + ml_evidence
-    )
-
-
-def _shadow_confidence(
-    *,
-    shadow_log_odds: float,
-    legacy_confidence_score: float,
-    config: EntityResolutionRunConfig,
-) -> float:
-    """Resolve bounded shadow confidence with a legacy fallback switch."""
-    if not config.scoring.calibration.enabled:
-        return legacy_confidence_score
-    return 1.0 / (1.0 + exp(-shadow_log_odds))
-
-
-def _compose_weighted_score(*, components: list[tuple[float | None, float]]) -> float:
+def _compose_weighted_score(*, components: list[tuple[float, float]]) -> float:
     """Normalize weighted section scores across the sections that are actually active."""
     weighted_sum = 0.0
     active_weight_sum = 0.0
     for score, weight in components:
-        if score is None or weight <= 0.0:
+        if weight <= 0.0:
             continue
         weighted_sum += float(score) * weight
         active_weight_sum += weight
@@ -1261,30 +1044,6 @@ def _reason_row(
     }
 
 
-def _ml_reason(
-    *,
-    ml_score: float,
-    config: EntityResolutionRunConfig,
-    policy: EffectiveScoringPolicy,
-) -> dict[str, Any] | None:
-    """Create reason row for ML contribution."""
-    scoring_values = effective_scoring_values(
-        scoring=config.scoring,
-        overrides=policy.feature_overrides,
-    )
-    signal_weight = scoring_values["ml_section_weight"]
-    weighted = ml_score * signal_weight
-    if not is_contributing_evidence(raw_contribution=ml_score, weighted_contribution=weighted):
-        return None
-    return _reason_row(
-        match_type="ml_similarity",
-        raw=ml_score,
-        weighted=weighted,
-        signal_weight=signal_weight,
-        similarity_score=ml_score,
-    )
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Signal × band diagnostics
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1315,17 +1074,14 @@ def log_score_diagnostics(
     pair_reasons: pl.DataFrame,
     config: EntityResolutionRunConfig,
 ) -> None:
-    """Emit signal-band and shadow-confidence diagnostics on a scored-pairs frame.
+    """Emit signal-band diagnostics on a scored-pairs frame.
 
-    Calls both :func:`_log_signal_band_diagnostics` and
-    :func:`_log_shadow_confidence_diagnostics` so callers that assemble
-    merged shard results can emit a single consolidated diagnostic log
-    rather than per-shard fragments.
+    Callers that assemble merged shard results use this to emit a single
+    consolidated diagnostic log rather than per-shard fragments.
     """
     _log_signal_band_diagnostics(
         scored_pairs=scored_pairs, pair_reasons=pair_reasons, config=config
     )
-    _log_shadow_confidence_diagnostics(scored_pairs=scored_pairs, pair_reasons=pair_reasons)
 
 
 def _log_signal_band_diagnostics(
@@ -1334,92 +1090,27 @@ def _log_signal_band_diagnostics(
     pair_reasons: pl.DataFrame,
     config: EntityResolutionRunConfig,
 ) -> None:
-    """Emit signal × band diagnostics to guide ML gate and threshold calibration.
+    """Emit signal × band diagnostics to guide threshold calibration.
 
     Logs two tables:
       1. Signal-count × band: how pairs group by number of contributing signals
-         and which score band they land in, plus ML gate pass rate per group.
+         and which score band they land in.
       2. Individual signal × band: per-signal breakdown showing which band pairs
          with each evidence type typically end up in.
-
-    A WARNING is emitted when pairs with 2+ strong signals are not passing the
-    ML gate — those pairs have the most evidence and should always reach the model.
     """
     if scored_pairs.is_empty():
         return
-    records = _build_signal_analysis(
-        scored_pairs=scored_pairs, pair_reasons=pair_reasons, config=config
-    )
+    records = _build_signal_analysis(scored_pairs=scored_pairs, pair_reasons=pair_reasons)
     _log_signal_count_table(records=records, config=config)
     _log_individual_signal_table(records=records)
-
-
-def _log_shadow_confidence_diagnostics(
-    *,
-    scored_pairs: pl.DataFrame,
-    pair_reasons: pl.DataFrame,
-) -> None:
-    """Log side-by-side shadow confidence saturation diagnostics."""
-    if scored_pairs.is_empty():
-        return
-    logger = get_dagster_logger()
-    legacy_mean = _safe_series_mean(scored_pairs, "legacy_confidence_score")
-    shadow_mean = _safe_series_mean(scored_pairs, "shadow_confidence_score")
-    legacy_perfect = scored_pairs.filter(pl.col("legacy_confidence_score") >= 0.999).height
-    shadow_near_perfect = scored_pairs.filter(pl.col("shadow_confidence_score") >= 0.95).height
-    logger.info(
-        "score_candidates confidence_shadow | legacy_mean=%.3f shadow_mean=%.3f"
-        " legacy_perfect=%d shadow_ge_0_95=%d",
-        legacy_mean,
-        shadow_mean,
-        legacy_perfect,
-        shadow_near_perfect,
-    )
-    if pair_reasons.is_empty():
-        return
-    high_shadow_keys = set(
-        scored_pairs.filter(pl.col("shadow_confidence_score") >= 0.95)
-        .get_column("pair_key")
-        .to_list()
-    )
-    if not high_shadow_keys:
-        return
-    patterns = (
-        pair_reasons.filter(pl.col("pair_key").is_in(sorted(high_shadow_keys)))
-        .group_by("pair_key")
-        .agg(pl.col("match_type").sort().alias("reason_types"))
-        .with_columns(pl.col("reason_types").list.join("|").alias("pattern"))
-        .group_by("pattern")
-        .len()
-        .sort("len", descending=True)
-        .head(5)
-        .to_dicts()
-    )
-    if patterns:
-        logger.info(
-            "score_candidates confidence_shadow patterns | %s",
-            ", ".join(f"{row['pattern']}={row['len']}" for row in patterns),
-        )
-
-
-def _safe_series_mean(frame: pl.DataFrame, column: str) -> float:
-    """Return a typed float mean for one numeric column."""
-    mean_value = frame.get_column(column).mean()
-    if isinstance(mean_value, (int, float)):
-        return float(mean_value)
-    return 0.0
 
 
 def _build_signal_analysis(
     *,
     scored_pairs: pl.DataFrame,
     pair_reasons: pl.DataFrame,
-    config: EntityResolutionRunConfig,
 ) -> list[dict[str, object]]:
-    """Annotate each scored pair with contributing-signal flags and ML gate status."""
-    det_w = config.scoring.deterministic_section_weight
-    nlp_w = config.scoring.nlp_section_weight
-    gate = config.scoring.ml.ml_gate_threshold
+    """Annotate each scored pair with its contributing-signal flags."""
 
     # Build one set-per-signal of pair_keys that have that contributing signal.
     signal_index: dict[str, set[str]] = {s: set() for s in _STRONG_SIGNALS}
@@ -1432,23 +1123,13 @@ def _build_signal_analysis(
             signal_index[str(row["match_type"])].add(str(row["pair_key"]))
 
     records: list[dict[str, object]] = []
-    for row in scored_pairs.select(
-        ["pair_key", "pair_outcome", "deterministic_section_score", "nlp_section_score"]
-    ).to_dicts():
+    for row in scored_pairs.select(["pair_key", "pair_outcome"]).to_dicts():
         pk = str(row["pair_key"])
-        pre_ml = _compose_weighted_score(
-            components=[
-                (float(row["deterministic_section_score"]), det_w),
-                (float(row["nlp_section_score"]), nlp_w),
-            ]
-        )
         present = {s for s in _STRONG_SIGNALS if pk in signal_index[s]}
         records.append(
             {
                 "pair_key": pk,
                 "pair_outcome": str(row["pair_outcome"]),
-                "pre_ml_score": pre_ml,
-                "ml_gate_pass": pre_ml >= gate,
                 "signal_count": len(present),
                 **{f"has_{s}": s in present for s in _STRONG_SIGNALS},
             }
@@ -1461,75 +1142,48 @@ def _log_signal_count_table(
     records: list[dict[str, object]],
     config: EntityResolutionRunConfig,
 ) -> None:
-    """Log the signal-count × band table with ML gate pass rates per tier."""
-    logger = get_dagster_logger()
-    gate = config.scoring.ml.ml_gate_threshold
+    """Log the signal-count × band table."""
+    logger = logging.getLogger(__name__)
 
     # Aggregate by signal count.
     band_counts: dict[int, dict[str, int]] = {}
-    gate_pass: dict[int, int] = {}
     for rec in records:
         sc = int(rec["signal_count"])  # type: ignore[arg-type]
         band = str(rec["pair_outcome"])
         band_counts.setdefault(sc, {"duplicate": 0, "maybe": 0, "below_maybe": 0, "total": 0})
         band_counts[sc][band] = band_counts[sc].get(band, 0) + 1
         band_counts[sc]["total"] += 1
-        gate_pass.setdefault(sc, 0)
-        if rec["ml_gate_pass"]:
-            gate_pass[sc] += 1
 
     logger.info(
-        "score_candidates signal×band | entity_type=%s dup_t=%.2f maybe_t=%.2f low_maybe_t=%.2f"
-        " ml_gate=%.2f",
+        "score_candidates signal×band | entity_type=%s dup_t=%.2f maybe_t=%.2f low_maybe_t=%.2f",
         config.metadata.entity_type,
         config.scoring.duplicate_threshold,
         config.scoring.maybe_threshold,
         config.scoring.low_maybe_threshold,
-        gate,
     )
     logger.info(
-        "  %-8s  %-8s  %-8s  %-8s  %-8s  %-10s",
+        "  %-8s  %-8s  %-8s  %-8s  %-8s",
         "signals",
         "total",
         "dup",
         "maybe",
         "below",
-        "ml_gated%",
     )
     for sc in sorted(band_counts):
         row = band_counts[sc]
-        total = row["total"]
-        pct = 100.0 * gate_pass[sc] / max(total, 1)
         logger.info(
-            "  %-8d  %-8d  %-8d  %-8d  %-8d  %-9.1f%%",
+            "  %-8d  %-8d  %-8d  %-8d  %-8d",
             sc,
-            total,
+            row["total"],
             row.get("duplicate", 0),
             row.get("maybe", 0),
             row.get("below_maybe", 0),
-            pct,
-        )
-
-    # Warn when 2+ signal pairs are missing the ML gate — they have the most
-    # evidence and should always reach the model.
-    strong_miss = sum(
-        1
-        for rec in records
-        if int(rec["signal_count"]) >= 2 and not bool(rec["ml_gate_pass"])  # type: ignore[arg-type]
-    )
-    if strong_miss > 0:
-        logger.warning(
-            "ML gate miss: %d pair(s) with 2+ contributing signals have "
-            "pre_ml_score < %.2f and will NOT be sent to the model. "
-            "Consider lowering ml_gate_threshold in the run config.",
-            strong_miss,
-            gate,
         )
 
 
 def _log_individual_signal_table(*, records: list[dict[str, object]]) -> None:
     """Log per-signal breakdown: how many pairs with each signal land in each band."""
-    logger = get_dagster_logger()
+    logger = logging.getLogger(__name__)
     logger.info(
         "  %-14s  %-8s  %-8s  %-8s  %-8s",
         "signal",
@@ -1564,7 +1218,6 @@ def _empty_result() -> ScoreCandidatesResult:
         score_delta_summary=pl.DataFrame(
             {
                 "candidates_scored": [0],
-                "ml_scored_count": [0],
                 "duplicate_count": [0],
                 "maybe_count": [0],
                 "strict_duplicate_count": [0],

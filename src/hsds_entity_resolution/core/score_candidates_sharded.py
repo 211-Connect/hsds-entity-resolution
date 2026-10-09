@@ -38,8 +38,7 @@ def partition_candidate_pairs_for_sharding(
         (pl.col("pair_key").hash() % num_shards).alias("_shard_id")
     )
     return [
-        with_shard.filter(pl.col("_shard_id") == i).drop("_shard_id")
-        for i in range(num_shards)
+        with_shard.filter(pl.col("_shard_id") == i).drop("_shard_id") for i in range(num_shards)
     ]
 
 
@@ -81,8 +80,7 @@ def partition_candidate_pairs_for_service_sharding(
     )
 
     return [
-        with_shard.filter(pl.col("_shard_id") == i).drop("_shard_id")
-        for i in range(num_shards)
+        with_shard.filter(pl.col("_shard_id") == i).drop("_shard_id") for i in range(num_shards)
     ]
 
 
@@ -155,9 +153,6 @@ def _recompute_score_delta_summary(scored_pairs: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(
         {
             "candidates_scored": [scored_pairs.height],
-            "ml_scored_count": [
-                scored_pairs.filter(pl.col("ml_section_score").is_not_null()).height
-            ],
             "duplicate_count": [scored_pairs.filter(pl.col("pair_outcome") == "duplicate").height],
             "maybe_count": [scored_pairs.filter(pl.col("pair_outcome") == "maybe").height],
             "strict_duplicate_count": [strict_dup],
@@ -177,7 +172,6 @@ def _empty_merge_result() -> ScoreCandidatesResult:
         score_delta_summary=pl.DataFrame(
             {
                 "candidates_scored": [0],
-                "ml_scored_count": [0],
                 "duplicate_count": [0],
                 "maybe_count": [0],
                 "strict_duplicate_count": [0],

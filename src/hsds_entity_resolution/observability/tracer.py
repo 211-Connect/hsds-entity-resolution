@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import polars as pl
-from dagster import get_dagster_logger
 
 
 @dataclass
@@ -41,7 +40,7 @@ class FrameTracer:
 
     def announce(self) -> None:
         """Emit one INFO log establishing which entity will be traced this run."""
-        _log = get_dagster_logger()
+        _log = logging.getLogger(__name__)
         _log.info(
             "🔍 PIPELINE TRACER  entity_id=%r — row state logged at every stage",
             self.entity_id,
@@ -54,7 +53,7 @@ class FrameTracer:
         When the tracer entity is absent from the frame the log explicitly flags
         it so you can identify the exact stage where data was lost or filtered.
         """
-        _log = get_dagster_logger()
+        _log = logging.getLogger(__name__)
         if not _log.isEnabledFor(logging.DEBUG):
             return
 

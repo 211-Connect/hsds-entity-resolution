@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import polars as pl
 
+from hsds_entity_resolution.types.frames import JUDGE_ANSWERS_SCHEMA
+
 FrameLike = pl.DataFrame | pl.LazyFrame
 ArtifactBundle = dict[str, Any]
+
+
+def _empty_judge_answers() -> pl.DataFrame:
+    """Return an empty judge-answers frame for runs without a judge."""
+    return pl.DataFrame(schema=JUDGE_ANSWERS_SCHEMA)
 
 
 @dataclass(frozen=True)
@@ -95,3 +102,4 @@ class IncrementalRunResult:
     review_queue_items: pl.DataFrame
     run_summary: pl.DataFrame
     persistence_artifact_bundle: ArtifactBundle
+    judge_answers: pl.DataFrame = field(default_factory=_empty_judge_answers)

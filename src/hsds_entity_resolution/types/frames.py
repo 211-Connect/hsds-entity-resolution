@@ -91,12 +91,7 @@ SCORED_PAIRS_SCHEMA: dict[str, Any] = {
     "model_version": pl.String,
     "deterministic_section_score": pl.Float64,
     "nlp_section_score": pl.Float64,
-    "ml_section_score": pl.Float64,
     "final_score": pl.Float64,
-    "legacy_confidence_score": pl.Float64,
-    "shadow_confidence_score": pl.Float64,
-    "shadow_log_odds": pl.Float64,
-    "calibration_version": pl.String,
     "predicted_duplicate": pl.Boolean,
     "pair_outcome": pl.String,
     "review_eligible": pl.Boolean,
@@ -121,6 +116,33 @@ PAIR_REASONS_SCHEMA: dict[str, Any] = {
     "similarity_score": pl.Float64,
 }
 
+# ---------------------------------------------------------------------------
+# Stage 3b — Judge (optional; only when a PairJudge is supplied)
+# ---------------------------------------------------------------------------
+
+# One row per judged pair. Organization pairs leave same_offering and
+# physically_delivered null. organization_relation is the most probable label;
+# the full distribution is kept beside it.
+JUDGE_ANSWERS_SCHEMA: dict[str, Any] = {
+    "pair_key": pl.String,
+    "entity_type": pl.String,
+    "model_id": pl.String,
+    "question_set_version": pl.String,
+    "same_site": pl.Float64,
+    "same_offering": pl.Float64,
+    "physically_delivered": pl.Float64,
+    "organization_relation": pl.String,
+    "organization_relation_probabilities": pl.Struct(
+        {
+            "same": pl.Float64,
+            "parent_and_chapter": pl.Float64,
+            "affiliated": pl.Float64,
+            "unrelated": pl.Float64,
+            "cannot_tell": pl.Float64,
+        }
+    ),
+}
+
 # Used by evidence_policy.count_contributing_reasons as the empty-fallback schema.
 CONTRIBUTING_REASONS_SCHEMA: dict[str, Any] = {
     "pair_key": pl.String,
@@ -142,12 +164,7 @@ FINALIZED_PAIRS_SCHEMA: dict[str, Any] = {
     "model_version": pl.String,
     "deterministic_section_score": pl.Float64,
     "nlp_section_score": pl.Float64,
-    "ml_section_score": pl.Float64,
     "final_score": pl.Float64,
-    "legacy_confidence_score": pl.Float64,
-    "shadow_confidence_score": pl.Float64,
-    "shadow_log_odds": pl.Float64,
-    "calibration_version": pl.String,
     "predicted_duplicate": pl.Boolean,
     "pair_outcome": pl.String,
     "review_eligible": pl.Boolean,

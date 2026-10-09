@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import polars as pl
-from dagster import get_dagster_logger
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.apply_mitigation import apply_mitigation
@@ -20,6 +21,8 @@ from hsds_entity_resolution.core.score_candidates_sharded import (
     merge_score_candidates_results,
     partition_candidate_pairs_by_entity_type,
 )
+from hsds_entity_resolution.judge.protocol import PairJudge
+from hsds_entity_resolution.judge.stage import judge_scored_pairs
 from hsds_entity_resolution.observability import FrameTracer, IncrementalProgressLogger
 from hsds_entity_resolution.types.contracts import (
     ApplyMitigationResult,
@@ -29,6 +32,7 @@ from hsds_entity_resolution.types.contracts import (
     IncrementalRunResult,
     ScoreCandidatesResult,
 )
+from hsds_entity_resolution.types.frames import JUDGE_ANSWERS_SCHEMA
 
 
 @dataclass
@@ -74,15 +78,23 @@ def run_incremental(
     previous_entity_index: pl.DataFrame | pl.LazyFrame,
     previous_pair_state_index: pl.DataFrame | pl.LazyFrame,
     config: EntityResolutionRunConfig,
-    taxonomy_embeddings: dict[str, list[float]] | None = None,
     explicit_backfill: bool = False,
     force_rescore: bool = False,
     scope_removed: bool = False,
     progress_logger: IncrementalProgressLogger | None = None,
     score_shards: int = 1,
+    judge: PairJudge | None = None,
+    source_profiles: Mapping[str, str] | None = None,
 ) -> IncrementalRunResult:
-    """Run all incremental stages and return typed artifacts for downstream consumers."""
-    _log = get_dagster_logger()
+    """Run all incremental stages and return typed artifacts for downstream consumers.
+
+    When ``judge`` is given, every pair scored this run is also put to the judge after
+    scoring, and its answers are returned as ``judge_answers`` and in the persistence
+    bundle under ``judge_answers``. ``source_profiles`` maps a source schema to the
+    Source Profile text the judge reads for records from it; schemas without an entry
+    get an empty slot. Without a judge, outputs are exactly as before.
+    """
+    _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
         emit_info=_log.info,
         emit_debug=_log.debug,
@@ -147,7 +159,6 @@ def run_incremental(
                 denormalized_organization=cleaned.denormalized_organization,
                 denormalized_service=cleaned.denormalized_service,
                 config=config,
-                taxonomy_embeddings=taxonomy_embeddings,
             )
             for shard in shards
         ]
@@ -158,7 +169,6 @@ def run_incremental(
             denormalized_organization=cleaned.denormalized_organization,
             denormalized_service=cleaned.denormalized_service,
             config=config,
-            taxonomy_embeddings=taxonomy_embeddings,
             progress_logger=logger,
         )
     logger.stage_completed(
@@ -169,6 +179,21 @@ def run_incremental(
         tracer.log_frame(scored.scored_pairs, "score_candidates.scored_pairs")
         tracer.log_frame(scored.pair_reasons, "score_candidates.pair_reasons")
     logger.stage_advanced(stage="incremental_pipeline", processed=3, total=7)
+
+    judge_answers = pl.DataFrame(schema=JUDGE_ANSWERS_SCHEMA)
+    if judge is not None:
+        logger.stage_started(stage="judge_scored_pairs")
+        judge_answers = judge_scored_pairs(
+            scored_pairs=scored.scored_pairs,
+            denormalized_organization=cleaned.denormalized_organization,
+            denormalized_service=cleaned.denormalized_service,
+            judge=judge,
+            source_profiles=source_profiles,
+        )
+        logger.stage_completed(
+            stage="judge_scored_pairs",
+            detail={"judged_pairs": judge_answers.height, "model_id": judge.model_id},
+        )
 
     logger.stage_started(stage="apply_mitigation")
     changed_entity_ids = set(
@@ -248,6 +273,7 @@ def run_incremental(
         removed_pair_ids=mitigated.removed_pair_ids,
         pair_id_remap=mitigated.pair_id_remap,
         config=config,
+        judge_answers=judge_answers if judge is not None else None,
     )
     logger.stage_completed(
         stage="prepare_persistence_artifacts",
@@ -290,6 +316,7 @@ def run_incremental(
         review_queue_items=review_queue.review_queue_items,
         run_summary=run_summary,
         persistence_artifact_bundle=persistence.persistence_artifact_bundle,
+        judge_answers=judge_answers,
     )
 
 
@@ -311,7 +338,7 @@ def run_incremental_until_candidates(
     disk and used as the shared input for per-shard scoring ops, avoiding
     redundant clean/generate work across shards.
     """
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
         emit_info=_log.info,
         emit_debug=_log.debug,
@@ -388,7 +415,7 @@ def run_incremental_until_clean_entities(
     ``generate_candidates`` with a disjoint anchor subset, avoiding redundant
     entity-cleaning work across shards.
     """
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
         emit_info=_log.info,
         emit_debug=_log.debug,
@@ -452,7 +479,7 @@ def run_incremental_after_scored(
     as :func:`run_incremental` so the consumer mapper and carry-forward logic
     can be applied unchanged.
     """
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
         emit_info=_log.info,
         emit_debug=_log.debug,

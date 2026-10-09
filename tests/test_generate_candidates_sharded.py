@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import polars as pl
-import pytest
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.generate_candidates import generate_candidates
@@ -17,7 +16,6 @@ from hsds_entity_resolution.types.contracts import (
     GenerateCandidatesResult,
 )
 from hsds_entity_resolution.types.frames import CANDIDATE_PAIR_SCHEMA
-
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -90,9 +88,9 @@ def _changed_entities(entity_ids: list[str], entity_type: str) -> pl.DataFrame:
 
 
 def _empty_changed() -> pl.DataFrame:
-    return pl.DataFrame(
-        {"entity_id": [], "entity_type": [], "delta_class": []}
-    ).cast({"entity_id": pl.String, "entity_type": pl.String, "delta_class": pl.String})
+    return pl.DataFrame({"entity_id": [], "entity_type": [], "delta_class": []}).cast(
+        {"entity_id": pl.String, "entity_type": pl.String, "delta_class": pl.String}
+    )
 
 
 def _simple_candidate_record(pair_key: str, entity_a: str, entity_b: str) -> dict:
@@ -114,7 +112,11 @@ def _empty_pair_frame() -> pl.DataFrame:
 
 
 def _gen_result(pairs: list[dict]) -> GenerateCandidatesResult:
-    df = pl.DataFrame(pairs, schema_overrides=CANDIDATE_PAIR_SCHEMA) if pairs else _empty_pair_frame()
+    df = (
+        pl.DataFrame(pairs, schema_overrides=CANDIDATE_PAIR_SCHEMA)
+        if pairs
+        else _empty_pair_frame()
+    )
     summary = pl.DataFrame({"candidate_count": [len(pairs)], "raw_candidate_count": [len(pairs)]})
     return GenerateCandidatesResult(candidate_pairs=df, candidate_summary=summary)
 
@@ -161,7 +163,7 @@ class TestPartitionEntityIdsForSharding:
         ids = frozenset(f"entity-{i:04d}" for i in range(40))
         shards_a = partition_entity_ids_for_sharding(ids, num_shards=4)
         shards_b = partition_entity_ids_for_sharding(ids, num_shards=4)
-        for a, b in zip(shards_a, shards_b):
+        for a, b in zip(shards_a, shards_b, strict=True):
             assert a == b
 
 
@@ -179,20 +181,32 @@ class TestComputeAnchorIds:
     ) -> CleanEntitiesResult:
         org_rows = [_make_entity_row(eid, "organization", [0.5, 0.5]) for eid in org_ids]
         svc_rows = [_make_entity_row(eid, "service", [0.5, 0.5]) for eid in svc_ids]
-        org_df = pl.DataFrame(org_rows) if org_rows else pl.DataFrame(
-            schema={k: pl.Object for k in _make_entity_row("x", "organization", []).keys()}
+        org_df = (
+            pl.DataFrame(org_rows)
+            if org_rows
+            else pl.DataFrame(
+                schema={k: pl.Object for k in _make_entity_row("x", "organization", [])}
+            )
         )
-        svc_df = pl.DataFrame(svc_rows) if svc_rows else pl.DataFrame(
-            schema={k: pl.Object for k in _make_entity_row("x", "service", []).keys()}
+        svc_df = (
+            pl.DataFrame(svc_rows)
+            if svc_rows
+            else pl.DataFrame(schema={k: pl.Object for k in _make_entity_row("x", "service", [])})
         )
         changed_df = pl.DataFrame(
-            {"entity_id": [c[0] for c in changed], "entity_type": [c[1] for c in changed], "delta_class": [c[2] for c in changed]},
+            {
+                "entity_id": [c[0] for c in changed],
+                "entity_type": [c[1] for c in changed],
+                "delta_class": [c[2] for c in changed],
+            },
         ).cast({"entity_id": pl.String, "entity_type": pl.String, "delta_class": pl.String})
         return CleanEntitiesResult(
             denormalized_organization=org_df,
             denormalized_service=svc_df,
             entity_index=pl.DataFrame(),
-            entity_delta_summary=pl.DataFrame({"added_count": [0], "changed_count": [0], "removed_count": [0]}),
+            entity_delta_summary=pl.DataFrame(
+                {"added_count": [0], "changed_count": [0], "removed_count": [0]}
+            ),
             removed_entity_ids=pl.DataFrame({"entity_id": pl.Series([], dtype=pl.String)}),
             changed_entities=changed_df,
             no_change=False,
@@ -318,7 +332,7 @@ class TestShardsMatchMonolithicGenerate:
         n_shards = 3
         config = _org_config()
         org_df = self._build_org_frame(n_entities)
-        svc_df = pl.DataFrame(schema={k: pl.Object if isinstance(v, pl.datatypes.classes.DataTypeClass) else v for k, v in pl.DataFrame([_make_entity_row("x", "service", [0.0])]).schema.items()}).clear()
+        svc_df = pl.DataFrame([_make_entity_row("x", "service", [0.0])]).clear()
         all_ids = list(org_df.get_column("entity_id").to_list())
         changed_df = _changed_entities(all_ids, "organization")
 
@@ -330,7 +344,10 @@ class TestShardsMatchMonolithicGenerate:
             explicit_backfill=False,
         )
 
-        from hsds_entity_resolution.core.generate_candidates_sharded import partition_entity_ids_for_sharding
+        from hsds_entity_resolution.core.generate_candidates_sharded import (
+            partition_entity_ids_for_sharding,
+        )
+
         anchor_ids = frozenset(all_ids)
         subsets = partition_entity_ids_for_sharding(anchor_ids, num_shards=n_shards)
         shard_results = [
@@ -377,7 +394,10 @@ class TestShardsMatchMonolithicGenerate:
             explicit_backfill=False,
         )
 
-        from hsds_entity_resolution.core.generate_candidates_sharded import partition_entity_ids_for_sharding
+        from hsds_entity_resolution.core.generate_candidates_sharded import (
+            partition_entity_ids_for_sharding,
+        )
+
         anchor_ids = frozenset(all_ids)
         subsets = partition_entity_ids_for_sharding(anchor_ids, num_shards=n_shards)
         shard_results = [
@@ -409,7 +429,9 @@ class TestShardsMatchMonolithicGenerate:
         ]
         org_df = pl.DataFrame(org_rows)
         svc_df = org_df.clear()
-        changed_df = _changed_entities(list(org_df.get_column("entity_id").to_list()), "organization")
+        changed_df = _changed_entities(
+            list(org_df.get_column("entity_id").to_list()), "organization"
+        )
 
         result = generate_candidates(
             denormalized_organization=org_df,

@@ -1,4 +1,4 @@
-"""Tests for ML inference routing in candidate scoring."""
+"""Tests for deterministic and NLP candidate scoring."""
 
 from __future__ import annotations
 
@@ -7,112 +7,7 @@ import pytest
 
 import hsds_entity_resolution.core.score_candidates as score_candidates_module
 from hsds_entity_resolution.config import EntityResolutionRunConfig
-from hsds_entity_resolution.core.ml_inference import to_legacy_entity
-
-
-def test_score_candidates_uses_model_score_when_available(monkeypatch) -> None:
-    """ML section score should use model output when scorer returns a pair score."""
-    config = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-ml",
-        scope_id="scope-ml",
-        entity_type="organization",
-    )
-    payload = config.model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = True
-    payload["scoring"]["ml"]["ml_gate_threshold"] = 0.0
-    config = EntityResolutionRunConfig.model_validate(payload)
-
-    monkeypatch.setattr(
-        score_candidates_module,
-        "score_pairs_with_model",
-        lambda **_: {"org-a__org-b": 0.11},
-    )
-
-    result = score_candidates_module.score_candidates(
-        candidate_pairs=_candidate_pairs(),
-        denormalized_organization=_normalized_org_rows(
-            "Alpha Health",
-            "Alpha Health Services",
-            include_overlap=False,
-            left_locations=[],
-            right_locations=[],
-            left_identifiers=[],
-            right_identifiers=[],
-        ),
-        denormalized_service=pl.DataFrame(),
-        config=config,
-    )
-
-    row = result.scored_pairs.row(0, named=True)
-    assert row["ml_section_score"] == 0.11
-    assert row["embedding_similarity"] == 0.95
-
-
-def test_score_candidates_falls_back_to_embedding_similarity(monkeypatch) -> None:
-    """ML section score should preserve embedding fallback when scorer yields no result."""
-    config = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-ml",
-        scope_id="scope-ml",
-        entity_type="organization",
-    )
-    payload = config.model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = True
-    payload["scoring"]["ml"]["ml_gate_threshold"] = 0.0
-    config = EntityResolutionRunConfig.model_validate(payload)
-
-    monkeypatch.setattr(
-        score_candidates_module,
-        "score_pairs_with_model",
-        lambda **_: {},
-    )
-
-    result = score_candidates_module.score_candidates(
-        candidate_pairs=_candidate_pairs(),
-        denormalized_organization=_normalized_org_rows(
-            "Alpha Health",
-            "Alpha Health Services",
-            include_overlap=False,
-            left_locations=[],
-            right_locations=[],
-            left_identifiers=[],
-            right_identifiers=[],
-        ),
-        denormalized_service=pl.DataFrame(),
-        config=config,
-    )
-
-    row = result.scored_pairs.row(0, named=True)
-    assert row["ml_section_score"] == 0.95
-
-
-def test_to_legacy_entity_normalizes_mixed_taxonomy_shapes() -> None:
-    """Legacy feature payload should canonicalize mixed taxonomy and rollup variants."""
-    legacy = to_legacy_entity(
-        row={
-            "entity_id": "org-a",
-            "name": "Alpha Health",
-            "description": "Primary care",
-            "emails": ["hello@alpha.org"],
-            "phones": ["555-0100"],
-            "websites": ["alpha.org"],
-            "locations": [{"CITY": "Chicago", "STATE": "IL", "ZIP": "60601"}],
-            "taxonomies": [{"CODE": "261Q00000X"}, "261q00000x"],
-            "identifiers": [],
-            "services_rollup": [
-                {"name": "Case Management", "taxonomy_codes": ["T1017"]},
-                {"NAME": "Case Management", "taxonomies": [{"code": "t1017-1"}]},
-            ],
-            "organization_name": "",
-            "organization_id": "",
-            "embedding_vector": [0.1, 0.2],
-        }
-    )
-
-    assert legacy["taxonomies"] == [{"code": "261q00000x"}]
-    assert legacy["services_rollup"] == [
-        {"name": "case management", "taxonomies": ["t1017"]},
-        {"name": "case management", "taxonomies": ["t1017-1"]},
-    ]
+from hsds_entity_resolution.core.source_policy import PairPolicyContext, resolve_scoring_policy
 
 
 def test_score_candidates_honors_fuzzy_algorithm_setting() -> None:
@@ -245,7 +140,7 @@ def test_score_candidates_rejects_unknown_fuzzy_algorithm_in_strict_mode() -> No
 
 def test_score_candidates_emits_shared_address_reason_on_canonical_match() -> None:
     """Address variants that canonicalize equally should emit shared_address."""
-    config = _config_with_ml_disabled()
+    config = _default_org_config()
     normalized = _normalized_org_rows(
         include_overlap=False,
         left_locations=[
@@ -283,7 +178,7 @@ def test_score_candidates_emits_shared_address_reason_on_canonical_match() -> No
 
 def test_score_candidates_omits_shared_address_reason_on_mismatch() -> None:
     """Different canonical addresses should not emit shared_address reason rows."""
-    config = _config_with_ml_disabled()
+    config = _default_org_config()
     normalized = _normalized_org_rows(
         include_overlap=False,
         left_locations=[
@@ -318,7 +213,7 @@ def test_score_candidates_omits_shared_address_reason_on_mismatch() -> None:
 
 def test_score_candidates_emits_shared_identifier_reason_for_system_value_match() -> None:
     """Identifier match requires exact normalized system+value alignment."""
-    config = _config_with_ml_disabled()
+    config = _default_org_config()
     normalized = _normalized_org_rows(
         include_overlap=False,
         left_locations=[],
@@ -342,17 +237,13 @@ def test_score_candidates_emits_shared_identifier_reason_for_system_value_match(
     assert shared_identifier["entity_b_value"] == "npi|123456"
 
 
-def test_score_candidates_emits_name_and_ml_explainability_fields(monkeypatch) -> None:
-    """Name and ML reasons should retain the compared values and similarity score."""
+def test_score_candidates_emits_name_explainability_fields(monkeypatch) -> None:
+    """Name reasons should retain the compared values and similarity score."""
     config = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-ml",
-        scope_id="scope-ml",
+        team_id="team-name",
+        scope_id="scope-name",
         entity_type="organization",
     )
-    payload = config.model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = True
-    payload["scoring"]["ml"]["ml_gate_threshold"] = 0.0
-    config = EntityResolutionRunConfig.model_validate(payload)
 
     monkeypatch.setattr(
         score_candidates_module,
@@ -377,15 +268,11 @@ def test_score_candidates_emits_name_and_ml_explainability_fields(monkeypatch) -
 
     reasons = result.pair_reasons.to_dicts()
     name_reason = next(reason for reason in reasons if reason["match_type"] == "name_similarity")
-    ml_reason = next(reason for reason in reasons if reason["match_type"] == "ml_similarity")
 
     assert name_reason["entity_a_value"] == "alpha health"
     assert name_reason["entity_b_value"] == "alpha health services"
     assert name_reason["similarity_score"] == pytest.approx(name_reason["raw_contribution"])
-    assert ml_reason["matched_value"] is None
-    assert ml_reason["entity_a_value"] is None
-    assert ml_reason["entity_b_value"] is None
-    assert ml_reason["similarity_score"] == pytest.approx(0.95)
+    assert "ml_similarity" not in {reason["match_type"] for reason in reasons}
 
 
 def test_score_candidates_emits_exact_taxonomy_reason_with_full_score() -> None:
@@ -483,7 +370,7 @@ def test_score_candidates_emits_grandparent_taxonomy_reason_with_decay() -> None
 
 def test_score_candidates_omits_shared_identifier_when_system_differs() -> None:
     """Matching identifier values with different systems must not count as shared."""
-    config = _config_with_ml_disabled()
+    config = _default_org_config()
     normalized = _normalized_org_rows(
         include_overlap=False,
         left_locations=[],
@@ -542,7 +429,7 @@ def test_score_candidates_shared_address_can_flip_duplicate_prediction() -> None
 
 def test_score_candidates_omits_zero_contribution_deterministic_reasons() -> None:
     """Deterministic reason rows should be emitted only when they contribute."""
-    config = _config_with_ml_disabled()
+    config = _default_org_config()
     result = score_candidates_module.score_candidates(
         candidate_pairs=_candidate_pairs(),
         denormalized_organization=_normalized_org_rows(
@@ -571,7 +458,6 @@ def test_score_candidates_normalizes_deterministic_score_when_signal_disabled() 
         scope_id="scope-cal-org",
         entity_type="organization",
     ).model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
     payload["scoring"]["deterministic"]["shared_identifier"]["enabled"] = False
     config = EntityResolutionRunConfig.model_validate(payload)
 
@@ -608,7 +494,6 @@ def test_score_candidates_service_defaults_normalize_full_deterministic_match_to
         scope_id="scope-cal-svc",
         entity_type="service",
     ).model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
     config = EntityResolutionRunConfig.model_validate(payload)
 
     result = score_candidates_module.score_candidates(
@@ -630,7 +515,6 @@ def test_score_candidates_service_ignores_identifier_overlap_even_when_present()
         scope_id="scope-svc-identifiers",
         entity_type="service",
     ).model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
     config = EntityResolutionRunConfig.model_validate(payload)
 
     service_rows = _normalized_service_rows(include_overlap=True).with_columns(
@@ -659,7 +543,7 @@ def test_score_candidates_service_ignores_identifier_overlap_even_when_present()
 
 def test_score_candidates_emits_shared_domain_reason_for_url_variants() -> None:
     """Website URLs should match on normalized domain, not raw string equality."""
-    config = _config_with_ml_disabled()
+    config = _default_org_config()
     normalized = _normalized_org_rows(
         include_overlap=False,
         left_emails=[],
@@ -684,7 +568,7 @@ def test_score_candidates_emits_shared_domain_reason_for_url_variants() -> None:
 
 def test_score_candidates_emits_shared_domain_reason_for_email_to_website_match() -> None:
     """Domain overlap should include email-vs-website combinations."""
-    config = _config_with_ml_disabled()
+    config = _default_org_config()
     normalized = _normalized_org_rows(
         include_overlap=False,
         left_emails=["hello@alpha.org"],
@@ -709,7 +593,7 @@ def test_score_candidates_emits_shared_domain_reason_for_email_to_website_match(
 
 def test_score_candidates_treats_shared_domain_as_binary_with_partial_overlap() -> None:
     """Shared-domain raw contribution should be 1.0 if any domain overlaps."""
-    config = _config_with_ml_disabled()
+    config = _default_org_config()
     normalized = _normalized_org_rows(
         include_overlap=False,
         left_emails=[],
@@ -745,10 +629,8 @@ def test_score_candidates_classifies_threshold_bands_and_review_eligibility(
         scope_id="scope-tier",
         entity_type="organization",
     ).model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
     payload["scoring"]["deterministic_section_weight"] = 1.0
     payload["scoring"]["nlp_section_weight"] = 0.0
-    payload["scoring"]["ml_section_weight"] = 0.0
     payload["scoring"]["duplicate_threshold"] = 0.8
     payload["scoring"]["maybe_threshold"] = 0.6
     payload["scoring"]["low_maybe_threshold"] = 0.5
@@ -761,18 +643,24 @@ def test_score_candidates_classifies_threshold_bands_and_review_eligibility(
         candidate: dict[str, object],
         entity_lookup: dict[tuple[str, str], dict[str, object]],
         config: EntityResolutionRunConfig,
-    ) -> score_candidates_module.PreMlPairRecord:
+    ) -> score_candidates_module.SectionScoredPair:
         _ = entity_lookup
-        _ = config
         pair_key = str(candidate["pair_key"])
         score = score_by_pair[pair_key]
-        return score_candidates_module.PreMlPairRecord(
+        return score_candidates_module.SectionScoredPair(
             candidate=candidate,
             det_score=score,
             nlp_score=0.0,
-            pre_ml_score=score,
             det_reasons=[],
             nlp_reasons=[],
+            policy=resolve_scoring_policy(
+                config=config,
+                context=PairPolicyContext(
+                    entity_type=str(candidate["entity_type"]),
+                    source_schema_a=str(candidate["source_schema_a"]),
+                    source_schema_b=str(candidate["source_schema_b"]),
+                ),
+            ),
         )
 
     monkeypatch.setattr(score_candidates_module, "_pre_score_pair", _fake_pre_score_pair)
@@ -829,86 +717,9 @@ def test_score_candidates_classifies_threshold_bands_and_review_eligibility(
     assert summary["retained_count"] == 3
 
 
-def test_shadow_confidence_preserves_legacy_score_and_avoids_trivial_saturation() -> None:
-    """Shadow confidence should compress strong evidence while leaving legacy score unchanged."""
-    config = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-shadow",
-        scope_id="scope-shadow",
-        entity_type="service",
-    )
-    payload = config.model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
-    config = EntityResolutionRunConfig.model_validate(payload)
-
-    result = score_candidates_module.score_candidates(
-        candidate_pairs=_service_candidate_pairs(),
-        denormalized_organization=pl.DataFrame(),
-        denormalized_service=_normalized_service_rows(include_overlap=True),
-        config=config,
-    )
-
-    row = result.scored_pairs.row(0, named=True)
-    assert row["final_score"] == pytest.approx(1.0)
-    assert row["legacy_confidence_score"] == pytest.approx(row["final_score"])
-    assert row["shadow_confidence_score"] < 1.0
-    assert row["shadow_confidence_score"] == pytest.approx(0.7369158958)
-    assert row["shadow_log_odds"] == pytest.approx(1.03)
-    assert row["calibration_version"] == "shadow-log-odds-v1"
-
-
-def test_shadow_confidence_increases_with_stronger_evidence() -> None:
-    """Shadow confidence should increase monotonically as corroborating evidence is added."""
-    config = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-shadow",
-        scope_id="scope-shadow",
-        entity_type="service",
-    )
-    payload = config.model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
-    config = EntityResolutionRunConfig.model_validate(payload)
-
-    weaker = score_candidates_module.score_candidates(
-        candidate_pairs=_service_candidate_pairs(),
-        denormalized_organization=pl.DataFrame(),
-        denormalized_service=_normalized_service_rows(include_overlap=False),
-        config=config,
-    ).scored_pairs.row(0, named=True)
-    stronger = score_candidates_module.score_candidates(
-        candidate_pairs=_service_candidate_pairs(),
-        denormalized_organization=pl.DataFrame(),
-        denormalized_service=_normalized_service_rows(include_overlap=True),
-        config=config,
-    ).scored_pairs.row(0, named=True)
-
-    assert weaker["legacy_confidence_score"] < stronger["legacy_confidence_score"]
-    assert weaker["shadow_confidence_score"] < stronger["shadow_confidence_score"]
-
-
-def test_shadow_confidence_can_be_disabled_to_match_legacy_score() -> None:
-    """Disabled calibration should fall back to the legacy confidence score."""
-    payload = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team-shadow",
-        scope_id="scope-shadow",
-        entity_type="organization",
-    ).model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
-    payload["scoring"]["calibration"]["enabled"] = False
-    config = EntityResolutionRunConfig.model_validate(payload)
-
-    result = score_candidates_module.score_candidates(
-        candidate_pairs=_candidate_pairs(),
-        denormalized_organization=_normalized_org_rows(include_overlap=True),
-        denormalized_service=pl.DataFrame(),
-        config=config,
-    )
-
-    row = result.scored_pairs.row(0, named=True)
-    assert row["shadow_confidence_score"] == pytest.approx(row["legacy_confidence_score"])
-
-
 def test_score_candidates_source_policy_can_disable_name_similarity() -> None:
     """Pair rules can remove NLP/name contribution for matching source-profile pairs."""
-    payload = _config_with_ml_disabled().model_dump()
+    payload = _default_org_config().model_dump()
     payload["source_policy"] = {
         "source_profiles": {"PROFILE_SHARED": {"source_schemas": ["SOURCE_A"]}},
         "admission_rules": [],
@@ -943,7 +754,7 @@ def test_score_candidates_source_policy_can_disable_name_similarity() -> None:
 
 def test_score_candidates_source_policy_suppresses_name_when_taxonomy_contributes() -> None:
     """Correlation rules can suppress name evidence when another signal contributed."""
-    payload = _config_with_ml_disabled().model_dump()
+    payload = _default_org_config().model_dump()
     payload["source_policy"] = {
         "source_profiles": {"PROFILE_SHARED": {"source_schemas": ["SOURCE_A"]}},
         "admission_rules": [],
@@ -985,10 +796,9 @@ def test_score_candidates_source_policy_suppresses_name_when_taxonomy_contribute
 
 def test_score_candidates_source_policy_overrides_weights_and_thresholds() -> None:
     """Pair rules can apply effective scoring weights and duplicate thresholds."""
-    payload = _config_with_ml_disabled().model_dump()
+    payload = _default_org_config().model_dump()
     payload["scoring"]["deterministic_section_weight"] = 1.0
     payload["scoring"]["nlp_section_weight"] = 0.0
-    payload["scoring"]["ml_section_weight"] = 0.0
     payload["scoring"]["duplicate_threshold"] = 0.95
     payload["scoring"]["maybe_threshold"] = 0.50
     payload["scoring"]["low_maybe_threshold"] = 0.35
@@ -1041,7 +851,7 @@ def test_score_candidates_source_policy_overrides_weights_and_thresholds() -> No
 
 def test_score_candidates_source_policy_any_relation_applies_cross_profile_org_pair() -> None:
     """Organization pair rules with `any` relation should apply across source profiles."""
-    payload = _config_with_ml_disabled().model_dump()
+    payload = _default_org_config().model_dump()
     payload["source_policy"] = {
         "source_profiles": {
             "PROFILE_WELLSKY": {"source_schemas": ["SOURCE_A"]},
@@ -1160,7 +970,6 @@ def test_score_candidates_exact_phone_overlap_is_binary_when_one_side_has_many_p
         entity_type="service",
     )
     payload = config.model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
     config = EntityResolutionRunConfig.model_validate(payload)
 
     rows = _normalized_service_rows(include_overlap=False).with_columns(
@@ -1175,9 +984,8 @@ def test_score_candidates_exact_phone_overlap_is_binary_when_one_side_has_many_p
         config=config,
     )
 
-    phone_reason = (
-        result.pair_reasons.filter(pl.col("match_type") == "shared_phone")
-        .row(0, named=True)
+    phone_reason = result.pair_reasons.filter(pl.col("match_type") == "shared_phone").row(
+        0, named=True
     )
     assert phone_reason["raw_contribution"] == pytest.approx(1.0)
 
@@ -1256,27 +1064,24 @@ def _config_with_nlp_overrides(**nlp_overrides: float | str) -> EntityResolution
     ).model_dump()
     for key, value in nlp_overrides.items():
         payload["scoring"]["nlp"][key] = value
-    payload["scoring"]["ml"]["ml_enabled"] = False
     return EntityResolutionRunConfig.model_validate(payload)
 
 
-def _config_with_ml_disabled() -> EntityResolutionRunConfig:
-    """Return default run config with ML disabled for deterministic-only tests."""
+def _default_org_config() -> EntityResolutionRunConfig:
+    """Return the default organization run config."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-det",
         scope_id="scope-det",
         entity_type="organization",
     ).model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
     return EntityResolutionRunConfig.model_validate(payload)
 
 
 def _config_for_address_flip() -> EntityResolutionRunConfig:
     """Return config where address signal can independently cross duplicate threshold."""
-    payload = _config_with_ml_disabled().model_dump()
+    payload = _default_org_config().model_dump()
     payload["scoring"]["deterministic_section_weight"] = 1.0
     payload["scoring"]["nlp_section_weight"] = 0.0
-    payload["scoring"]["ml_section_weight"] = 0.0
     payload["scoring"]["duplicate_threshold"] = 0.5
     payload["scoring"]["maybe_threshold"] = 0.3
     payload["scoring"]["low_maybe_threshold"] = 0.2
@@ -1291,10 +1096,9 @@ def _config_for_address_flip() -> EntityResolutionRunConfig:
 
 def _config_with_taxonomy_only() -> EntityResolutionRunConfig:
     """Return config where taxonomy is the only active deterministic signal."""
-    payload = _config_with_ml_disabled().model_dump()
+    payload = _default_org_config().model_dump()
     payload["scoring"]["deterministic_section_weight"] = 1.0
     payload["scoring"]["nlp_section_weight"] = 0.0
-    payload["scoring"]["ml_section_weight"] = 0.0
     payload["scoring"]["deterministic"]["shared_email"]["weight"] = 0.0
     payload["scoring"]["deterministic"]["shared_phone"]["weight"] = 0.0
     payload["scoring"]["deterministic"]["shared_domain"]["weight"] = 0.0
@@ -1474,7 +1278,6 @@ def _wellsky_reconstruction_config() -> EntityResolutionRunConfig:
         scope_id="scope-wellsky",
         entity_type="service",
     ).model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
     payload["source_policy"] = {
         "source_profiles": {"WELLSKY": {"source_schemas": ["211HSIS"]}},
         "admission_rules": [],
@@ -1494,7 +1297,6 @@ def _wellsky_reconstruction_config() -> EntityResolutionRunConfig:
                     },
                     "deterministic_section_weight": 1.0,
                     "nlp_section_weight": 0.0,
-                    "ml_section_weight": 0.0,
                     "duplicate_threshold": 0.86,
                     "maybe_threshold": 0.74,
                     "low_maybe_threshold": 0.60,
@@ -1515,7 +1317,6 @@ def _v5_identity_config() -> EntityResolutionRunConfig:
         scope_id="scope-v5",
         entity_type="service",
     ).model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
     payload["source_policy"] = {
         "source_profiles": {
             "wellsky": {"source_schemas": ["dupagec211", "lakecou211", "uwgsl211"]},
@@ -1542,10 +1343,8 @@ def _v5_identity_config() -> EntityResolutionRunConfig:
                         },
                         "organization_name_similarity": {"enabled": True, "weight": 0.15},
                     },
-                    "deterministic_section_weight": 0.70,
-                    "nlp_section_weight": 0.20,
-                    "ml_section_weight": 0.10,
-                    "ml_gate_threshold": 0.20,
+                    "deterministic_section_weight": 0.70 / 0.90,
+                    "nlp_section_weight": 0.20 / 0.90,
                     "duplicate_threshold": 0.72,
                     "maybe_threshold": 0.62,
                     "low_maybe_threshold": 0.20,
@@ -1570,10 +1369,8 @@ def _v5_identity_config() -> EntityResolutionRunConfig:
                         },
                         "organization_name_similarity": {"enabled": True, "weight": 0.10},
                     },
-                    "deterministic_section_weight": 0.30,
-                    "nlp_section_weight": 0.10,
-                    "ml_section_weight": 0.60,
-                    "ml_gate_threshold": 0.20,
+                    "deterministic_section_weight": 0.75,
+                    "nlp_section_weight": 0.25,
                     "duplicate_threshold": 0.86,
                     "maybe_threshold": 0.74,
                     "low_maybe_threshold": 0.60,

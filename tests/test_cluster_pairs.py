@@ -82,7 +82,6 @@ def _triangle_fixture() -> pl.DataFrame:
             "model_version": ["m", "m", "m"],
             "deterministic_section_score": [0.9, 0.9, 0.1],
             "nlp_section_score": [0.9, 0.9, 0.1],
-            "ml_section_score": [0.9, 0.9, 0.1],
             "final_score": [0.95, 0.94, 0.10],
             "predicted_duplicate": [True, True, False],
             "embedding_similarity": [0.95, 0.94, 0.10],

@@ -1,4 +1,4 @@
-# hsds-record-matcher
+# hsds-entity-resolution
 
 Reusable [Dagster](https://dagster.io) component for incremental entity resolution on
 [HSDS](https://docs.openreferral.org/en/latest/) (Human Services Data Specification) records.
@@ -6,7 +6,7 @@ Reusable [Dagster](https://dagster.io) component for incremental entity resoluti
 **Install:**
 
 ```bash
-pip install hsds-record-matcher
+pip install hsds-entity-resolution
 ```
 
 ---
@@ -18,14 +18,15 @@ and services from multiple data partners. Over time those records diverge — di
 phone formats, partial addresses — making it hard to know which rows describe the same real-world
 entity.
 
-`hsds-record-matcher` provides a single Dagster component, `EntityResolutionComponent`, that
+`hsds-entity-resolution` provides a single Dagster component, `EntityResolutionComponent`, that
 runs an incremental seven-stage entity-resolution pipeline on your HSDS data:
 
 | Stage | What happens |
 |---|---|
 | **Clean entities** | Normalize contact fields, compute content hashes, detect adds/changes/removals since the last run |
 | **Generate candidates** | Block on overlap signals (email, phone, domain, taxonomy, location) to produce candidate pairs |
-| **Score candidates** | Weighted combination of deterministic overlap signals, NLP fuzzy name/description matching, and optional ML scoring |
+| **Score candidates** | Weighted combination of deterministic overlap signals and NLP fuzzy name/description matching |
+| **Judge pairs** *(optional)* | A caller-supplied `PairJudge` answers Same Site, Same Offering, physical delivery and Organization Relation as probabilities for every scored pair |
 | **Apply mitigation** | Carry forward stable pairs, retire pairs for removed entities, detect pair identity continuity |
 | **Cluster pairs** | Greedy correlation clustering groups high-confidence duplicate pairs into clusters |
 | **Materialize review queue** | Pairs that score above the *maybe* threshold but below *duplicate* are surfaced for human review |
@@ -82,7 +83,7 @@ Denormalized HSDS entity records. Required columns:
 | Column | Type | Description |
 |---|---|---|
 | `entity_id` | `str` | Stable unique identifier for this record |
-| `source_schema` | `str` | Tenant or source identifier (e.g. `il211_regional`) |
+| `source_schema` | `str` | Tenant or source identifier (e.g. `region_a`) |
 | `name` | `str` | Entity name used for NLP scoring |
 | `description` | `str` | Entity description used for NLP scoring |
 | `emails` | `list[str]` | Normalized email addresses |
@@ -121,7 +122,7 @@ and detect pair identity continuity across incremental runs.
 | `scope_id` | `str` | `"default"` | Deployment or region identifier |
 | `entity_type` | `"organization" \| "service"` | `"organization"` | Which entity type this instance processes |
 | `policy_version` | `str` | `"hsds-er-v1"` | Scoring policy version tag |
-| `model_version` | `str` | `"embedding-only-v1"` | ML model version tag |
+| `model_version` | `str` | `"embedding-only-v1"` | Embedding model version tag |
 | `explicit_backfill` | `bool` | `False` | Force a full re-run even when no entity changes are detected |
 | `organization_entities_asset_key` | `str` | `"organization_entities"` | Asset key for upstream org entities |
 | `service_entities_asset_key` | `str` | `"service_entities"` | Asset key for upstream service entities |
@@ -183,9 +184,8 @@ Key thresholds:
 |---|---|---|---|
 | `scoring.duplicate_threshold` | `0.82` | `0.70` | Minimum score to auto-cluster as duplicate |
 | `scoring.maybe_threshold` | `0.68` | `0.62` | Minimum score to send to review queue |
-| `scoring.deterministic_section_weight` | `0.45` | `0.40` | Weight of overlap-signal section |
-| `scoring.nlp_section_weight` | `0.35` | `0.40` | Weight of NLP fuzzy-match section |
-| `scoring.ml_section_weight` | `0.20` | `0.20` | Weight of ML section (disabled by default) |
+| `scoring.deterministic_section_weight` | `0.5625` | `0.50` | Weight of overlap-signal section |
+| `scoring.nlp_section_weight` | `0.4375` | `0.50` | Weight of NLP fuzzy-match section; the two must sum to 1 |
 | `scoring.nlp.fuzzy_threshold` | `0.88` | `0.86` | Minimum name similarity to count as NLP match |
 | `blocking.similarity_threshold` | `0.75` | `0.75` | Minimum embedding cosine similarity for blocking |
 | `blocking.max_candidates_per_entity` | `50` | `125` | Maximum candidate pairs per entity |
@@ -218,8 +218,65 @@ attributes:
 
 ---
 
+## Pair Judge contract
+
+The engine fixes what a judge reads and what it answers; it ships no questions or model.
+
+- `hsds_entity_resolution.judge.PairState`: both records as HSDS text (name, alternate
+  name, description, short description, eligibility, fees, application process,
+  taxonomy names, sites, phones as digits, websites, organization name and
+  description), a code-computed site comparison word (`same address`, `same city`,
+  `different`, `unknown`), the prior score as a bucket in words, and one free-text
+  `source_profile` slot per side. The engine fills the HSDS fields and leaves the
+  profile slots empty unless you pass `source_profiles={source_schema: text}`.
+- `hsds_entity_resolution.judge.PairAnswers`: `same_site`, `same_offering`,
+  `physically_delivered` (probabilities; the last two are null for organization
+  pairs), and `organization_relation` as a distribution over `same`,
+  `parent_and_chapter`, `affiliated`, `unrelated`, `cannot_tell`, plus `model_id` and
+  `question_set_version`. The judge never answers "duplicate"; compose that in your
+  own code.
+- `hsds_entity_resolution.judge.PairJudge`: a protocol with `judge(states) -> answers`
+  and a `state_token_budget`. Size states for the smallest model you may switch to
+  (`SMALLEST_MODEL_STATE_BUDGET_TOKENS`, 32k).
+- `ReferenceJudge` answers 0.5 everywhere and a uniform relation, so the pipeline runs
+  end to end without a model.
+
+```python
+from hsds_entity_resolution.core import run_incremental
+from hsds_entity_resolution.judge import ReferenceJudge
+
+result = run_incremental(..., judge=ReferenceJudge(), source_profiles={"source_a": "..."})
+result.judge_answers  # one row per scored pair, JUDGE_ANSWERS_SCHEMA
+```
+
+`judge_scored_pairs(...)` runs the same stage on its own, for hosts that run the judge
+as a separate step.
+
+## Normalisers
+
+`hsds_entity_resolution.normalize` holds pure, idempotent functions on plain strings —
+`normalize_phone` (digits plus extension), `normalize_email`, `normalize_url`,
+`normalize_address_component`, `normalize_postal_code` — usable outside the engine.
+
+## Migrating from `hsds-record-matcher` 1.x
+
+- **Install name.** The distribution is now `hsds-entity-resolution`, matching the
+  import name `hsds_entity_resolution`. Uninstall `hsds-record-matcher` first.
+- **ML scoring section removed (1.2.0).** `scoring.ml`, `scoring.calibration`,
+  `scoring.ml_section_weight` and pair-rule `ml_section_weight` / `ml_gate_threshold`
+  now fail validation. `deterministic_section_weight + nlp_section_weight` must equal
+  1.0; to keep your scores, divide each by their old sum. Scored pairs no longer carry
+  `ml_section_score`, `legacy_confidence_score`, `shadow_confidence_score`,
+  `shadow_log_odds` or `calibration_version`, and `run_incremental` no longer takes
+  `taxonomy_embeddings`.
+- **Judge stage (2.0.0).** `run_incremental` accepts `judge` and `source_profiles`;
+  without a judge every output is unchanged.
+- **Logging.** Core modules log through `logging.getLogger("hsds_entity_resolution...")`
+  instead of Dagster's logger. Add `hsds_entity_resolution` to your Dagster
+  `python_logs.managed_python_loggers` to see them in the Dagster UI.
+
 ## Links
 
 - **Source:** [github.com/211-Connect/hsds-entity-resolution](https://github.com/211-Connect/hsds-entity-resolution)
 - **Issues:** [github.com/211-Connect/hsds-entity-resolution/issues](https://github.com/211-Connect/hsds-entity-resolution/issues)
-- **PyPI:** [pypi.org/project/hsds-record-matcher](https://pypi.org/project/hsds-record-matcher/)
+- **PyPI:** [pypi.org/project/hsds-entity-resolution](https://pypi.org/project/hsds-entity-resolution/)

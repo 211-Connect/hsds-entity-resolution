@@ -14,7 +14,7 @@ from hsds_entity_resolution.dagster.components.entity_resolution_component impor
     _deep_merge,
     _ensure_frame,
 )
-from hsds_entity_resolution.definitions import defs
+from hsds_entity_resolution.dagster.definitions import defs
 
 
 def test_component_build_defs_and_execute_asset_function() -> None:

@@ -17,7 +17,8 @@ the redundant copy, so the merged result equals a monolithic run.
 
 from __future__ import annotations
 
-from dagster import get_dagster_logger
+import logging
+
 import polars as pl
 
 from hsds_entity_resolution.types.contracts import (
@@ -52,7 +53,7 @@ def partition_entity_ids_for_sharding(
     ids_list = sorted(entity_ids)
     hash_values = pl.Series("id", ids_list).hash().to_list()
     shards: list[set[str]] = [set() for _ in range(num_shards)]
-    for eid, h in zip(ids_list, hash_values):
+    for eid, h in zip(ids_list, hash_values, strict=True):
         shards[h % num_shards].add(eid)
     return [frozenset(s) for s in shards]
 
@@ -79,16 +80,10 @@ def compute_anchor_ids(
         rather than only entities with added/changed delta classes.
     """
     if full_scope_rescore:
-        org_ids = frozenset(
-            cleaned.denormalized_organization.get_column("entity_id").to_list()
-        )
-        svc_ids = frozenset(
-            cleaned.denormalized_service.get_column("entity_id").to_list()
-        )
+        org_ids = frozenset(cleaned.denormalized_organization.get_column("entity_id").to_list())
+        svc_ids = frozenset(cleaned.denormalized_service.get_column("entity_id").to_list())
         return org_ids | svc_ids
-    delta = cleaned.changed_entities.filter(
-        pl.col("delta_class").is_in(["added", "changed"])
-    )
+    delta = cleaned.changed_entities.filter(pl.col("delta_class").is_in(["added", "changed"]))
     if delta.is_empty():
         return frozenset()
     return frozenset(delta.get_column("entity_id").to_list())
@@ -110,12 +105,10 @@ def merge_generate_candidates_results(
     results:
         One result per generate shard.  Empty results are skipped.
     """
-    _log = get_dagster_logger()
+    _log = logging.getLogger(__name__)
     non_empty = [r for r in results if not r.candidate_pairs.is_empty()]
     if not non_empty:
-        _log.info(
-            "merge_generate_candidates: all shards empty — returning empty result"
-        )
+        _log.info("merge_generate_candidates: all shards empty — returning empty result")
         return _empty_generate_result()
     combined = pl.concat(
         [r.candidate_pairs for r in non_empty],
@@ -145,7 +138,5 @@ def merge_generate_candidates_results(
 def _empty_generate_result() -> GenerateCandidatesResult:
     return GenerateCandidatesResult(
         candidate_pairs=pl.DataFrame(schema=CANDIDATE_PAIR_SCHEMA),
-        candidate_summary=pl.DataFrame(
-            {"candidate_count": [0], "raw_candidate_count": [0]}
-        ),
+        candidate_summary=pl.DataFrame({"candidate_count": [0], "raw_candidate_count": [0]}),
     )
