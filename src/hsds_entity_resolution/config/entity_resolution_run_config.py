@@ -8,21 +8,39 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from hsds_entity_resolution.types.domain import EntityType
 
-_SUPPORTED_BLOCKING_OVERLAP_CHANNELS = {
-    "email",
-    "phone",
-    "website",
-    "taxonomy",
-    "location",
-    "address_exact",
-}
-
 _ML_SECTION_REMOVED_MESSAGE = (
     "The ML scoring section was removed in hsds-entity-resolution 1.2.0: the score is "
     "deterministic plus NLP only, and the shadow/legacy calibration scores are gone. "
     "Remove {keys} from this config; deterministic_section_weight and nlp_section_weight "
     "must now sum to 1.0."
 )
+
+
+_ADMISSION_REPLACED_MESSAGE = (
+    "Per-lane candidate admission was replaced in hsds-entity-resolution 2.1.0 (ISS-2177) "
+    "by one rule: a pair is a candidate when it shares an Informative Key value or its "
+    "embedding similarity is at or above blocking.similarity_threshold, unless a "
+    "Structural Exclusion vetoes it. Remove {keys} from this config and pass "
+    "informative_keys / structural_exclusion to the pipeline instead."
+)
+
+
+def _reject_replaced_admission_keys(data: Any, *, removed: tuple[str, ...]) -> Any:
+    """Raise a migration error when a config still carries replaced admission keys.
+
+    Args:
+        data: Raw mapping handed to a pydantic ``mode="before"`` validator.
+        removed: Key names that no longer exist in this model.
+
+    Returns:
+        ``data`` unchanged when none of the removed keys are present.
+    """
+    if not isinstance(data, dict):
+        return data
+    present = sorted(key for key in removed if key in data)
+    if present:
+        raise ValueError(_ADMISSION_REPLACED_MESSAGE.format(keys=", ".join(present)))
+    return data
 
 
 def _reject_removed_ml_keys(data: Any, *, removed: tuple[str, ...]) -> Any:
@@ -64,36 +82,23 @@ class BaseStrictModel(BaseModel):
 
 
 class BlockingConfig(BaseStrictModel):
-    """Candidate blocking and fanout controls."""
+    """Candidate admission and fanout controls.
+
+    ``similarity_threshold`` is the single embedding floor: a pair at or above it is a
+    candidate on similarity alone. ``max_candidates_per_entity`` caps how many such
+    pairs one anchor keeps; pairs admitted by a shared Informative Key are not capped by
+    it (see ``ChunkingConfig`` for the optional key caps).
+    """
 
     similarity_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
     max_candidates_per_entity: int = Field(default=50, ge=1, le=500)
     blocking_batch_size: int = Field(default=5000, ge=1, le=50000)
-    overlap_prefilter_channels: list[str] = Field(
-        default_factory=lambda: ["email", "phone", "website", "taxonomy", "location"]
-    )
 
-    @field_validator("overlap_prefilter_channels")
+    @model_validator(mode="before")
     @classmethod
-    def validate_overlap_prefilter_channels(cls, values: list[str]) -> list[str]:
-        """Validate overlap prefilter channel selections."""
-        normalized: list[str] = []
-        for value in values:
-            if not isinstance(value, str):
-                message = "overlap_prefilter_channels entries must be strings"
-                raise ValueError(message)
-            normalized_value = value.strip().lower()
-            if normalized_value:
-                normalized.append(normalized_value)
-        unique_values = list(dict.fromkeys(normalized))
-        if not unique_values:
-            message = "overlap_prefilter_channels must contain at least one channel"
-            raise ValueError(message)
-        unsupported = sorted(set(unique_values).difference(_SUPPORTED_BLOCKING_OVERLAP_CHANNELS))
-        if unsupported:
-            message = f"Unsupported overlap prefilter channels: {unsupported!r}"
-            raise ValueError(message)
-        return unique_values
+    def reject_replaced_admission_keys(cls, data: Any) -> Any:
+        """Fail with a migration message when the removed overlap prefilter is passed."""
+        return _reject_replaced_admission_keys(data, removed=("overlap_prefilter_channels",))
 
 
 class ChunkingConfig(BaseStrictModel):
@@ -127,8 +132,8 @@ class ChunkingConfig(BaseStrictModel):
         ge=1,
         le=100_000,
         description=(
-            "When set, cap default contact-overlap pairs retained per anchor. "
-            "Unset preserves prior uncapped contact-overlap expansion."
+            "When set, cap the Informative Key pairs considered per anchor. "
+            "Unset leaves Informative Key admission uncapped."
         ),
     )
     max_contact_index_fanout: int | None = Field(
@@ -136,43 +141,10 @@ class ChunkingConfig(BaseStrictModel):
         ge=1,
         le=100_000,
         description=(
-            "When set, truncate inverted-index values that map to more than this many "
-            "entities (deterministic sorted keep). Unset preserves prior uncapped fanout."
+            "When set, truncate Informative Key index values that map to more than this "
+            "many entities (deterministic sorted keep). Unset leaves fanout uncapped."
         ),
     )
-
-
-class AdmissionRuleConfig(BaseStrictModel):
-    """Generic candidate-admission rule evaluated after embedding threshold."""
-
-    rule_id: str
-    entity_types: list[EntityType] = Field(default_factory=lambda: ["organization", "service"])
-    source_relation: Literal[
-        "any",
-        "same_source",
-        "cross_source",
-        "same_profile",
-        "cross_source_same_profile",
-        "cross_profile",
-    ] = "any"
-    source_profiles: list[str] = Field(default_factory=list)
-    min_embedding_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
-    all_of: list[str] = Field(default_factory=list)
-    any_of: list[str] = Field(default_factory=list)
-    none_of: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_admission_rule(self) -> AdmissionRuleConfig:
-        """Validate supported channel names and source-profile references."""
-        referenced = [*self.all_of, *self.any_of, *self.none_of]
-        unsupported = sorted(set(referenced).difference(_SUPPORTED_BLOCKING_OVERLAP_CHANNELS))
-        if unsupported:
-            message = f"Unsupported admission rule channels: {unsupported!r}"
-            raise ValueError(message)
-        if not self.all_of and not self.any_of:
-            message = "Admission rule must define at least one all_of or any_of channel"
-            raise ValueError(message)
-        return self
 
 
 class DeterministicSignalConfig(BaseStrictModel):
@@ -350,18 +322,27 @@ class SourceProfileConfig(BaseStrictModel):
 
 
 class SourcePolicyConfig(BaseStrictModel):
-    """Generic source-aware policy extension supplied by host applications."""
+    """Source-aware scoring overrides supplied by host applications.
+
+    Only scoring reads it: ``pair_rules`` pick per-pair overrides by entity type and the
+    two records' source profiles. Candidate admission is generic (ISS-2177).
+    """
 
     source_profiles: dict[str, SourceProfileConfig] = Field(default_factory=dict)
-    admission_rules: list[AdmissionRuleConfig] = Field(default_factory=list)
     pair_rules: list[PairRuleConfig] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_replaced_admission_rules(cls, data: Any) -> Any:
+        """Fail with a migration message when per-lane admission rules are passed."""
+        return _reject_replaced_admission_keys(data, removed=("admission_rules",))
 
     @model_validator(mode="after")
     def validate_source_policy(self) -> SourcePolicyConfig:
-        """Validate rule references against configured source profiles."""
+        """Validate pair-rule references against configured source profiles."""
         profile_ids = set(self.source_profiles)
         referenced: set[str] = set()
-        for rule in [*self.admission_rules, *self.pair_rules]:
+        for rule in self.pair_rules:
             referenced.update(rule.source_profiles)
         unknown = sorted(referenced.difference(profile_ids))
         if unknown:

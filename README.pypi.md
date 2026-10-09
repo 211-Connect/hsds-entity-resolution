@@ -24,7 +24,7 @@ runs an incremental seven-stage entity-resolution pipeline on your HSDS data:
 | Stage | What happens |
 |---|---|
 | **Clean entities** | Normalize contact fields, compute content hashes, detect adds/changes/removals since the last run |
-| **Generate candidates** | Block on overlap signals (email, phone, domain, taxonomy, location) to produce candidate pairs |
+| **Generate candidates** | Admit a pair when it shares an Informative Key (name, phone, email, website, address) or its embedding similarity reaches one floor, unless a caller's Structural Exclusion vetoes it |
 | **Score candidates** | Weighted combination of deterministic overlap signals and NLP fuzzy name/description matching |
 | **Judge pairs** *(optional)* | A caller-supplied `PairJudge` answers Same Site, Same Offering, physical delivery and Organization Relation as probabilities for every scored pair |
 | **Apply mitigation** | Carry forward stable pairs, retire pairs for removed entities, detect pair identity continuity |
@@ -187,8 +187,8 @@ Key thresholds:
 | `scoring.deterministic_section_weight` | `0.5625` | `0.50` | Weight of overlap-signal section |
 | `scoring.nlp_section_weight` | `0.4375` | `0.50` | Weight of NLP fuzzy-match section; the two must sum to 1 |
 | `scoring.nlp.fuzzy_threshold` | `0.88` | `0.86` | Minimum name similarity to count as NLP match |
-| `blocking.similarity_threshold` | `0.75` | `0.75` | Minimum embedding cosine similarity for blocking |
-| `blocking.max_candidates_per_entity` | `50` | `125` | Maximum candidate pairs per entity |
+| `blocking.similarity_threshold` | `0.75` | `0.75` | The embedding floor: a pair at or above it is a candidate on similarity alone |
+| `blocking.max_candidates_per_entity` | `50` | `125` | Maximum embedding-floor candidates per anchor (shared-key candidates are not capped by it) |
 
 ---
 
@@ -251,6 +251,44 @@ result.judge_answers  # one row per scored pair, JUDGE_ANSWERS_SCHEMA
 
 `judge_scored_pairs(...)` runs the same stage on its own, for hosts that run the judge
 as a separate step.
+
+## Candidate admission
+
+One generic rule decides which pairs are scored (2.1.0):
+
+- **Informative Keys.** Two records that share a value of `name`, `phone`, `email`,
+  `website` or `address` (street line required) are a candidate, whatever their
+  embedding similarity, provided the field is informative in both records' source
+  schemas. A field is informative where its values mostly identify a record; a value
+  repeated across hundreds of rows (a category label used as a name) is not.
+- **Embedding floor.** Records at or above `blocking.similarity_threshold` are a
+  candidate, up to `blocking.max_candidates_per_entity` per anchor.
+- **Structural Exclusions.** A caller-supplied callable can veto any pair. Excluded
+  pairs are returned as `excluded_pairs` with the reason, never dropped silently.
+
+Pass both to `run_incremental` (or `run_incremental_until_candidates`):
+
+```python
+from hsds_entity_resolution.core.admission import build_informative_key_table
+
+informative_keys = build_informative_key_table(
+    ratios={"SOURCE_A": {"name": 0.12, "phone": 0.74}},  # distinct-value ratios you measure
+    cutoff=0.3,
+    overrides={"SOURCE_B": {"name": True}},
+)
+
+def exclude(entity_a, entity_b):
+    return "different_by_construction" if ... else None
+
+result = run_incremental(..., informative_keys=informative_keys, structural_exclusion=exclude)
+result.excluded_pairs  # pair_key, entity ids, schemas, similarity, exclusion_reason
+```
+
+Without them every key field is informative and nothing is excluded. Scoring does not
+depend on how a pair was admitted: `pair_rules` still pick scoring overrides from the
+entity type and the two source schemas. `source_policy.admission_rules` and
+`blocking.overlap_prefilter_channels` were removed; passing them fails validation with a
+migration message.
 
 ## Normalisers
 

@@ -114,8 +114,8 @@ def test_pipeline_normalizes_mixed_taxonomy_shapes_to_canonical_contract() -> No
     assert denormalized[1]["services_rollup"] == [
         {"name": "case management", "taxonomies": [{"code": "t1017"}]}
     ]
-    reasons = result.candidate_pairs.row(0, named=True)["candidate_reason_codes"]
-    assert "shared_taxonomy" in reasons
+    # The two shapes normalise to one code, so scoring sees a shared taxonomy term.
+    assert "shared_taxonomy" in result.pair_reasons.get_column("match_type").to_list()
 
 
 def test_pipeline_short_circuits_on_no_change() -> None:

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import polars as pl
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
+from hsds_entity_resolution.core.admission import InformativeKeyTable, StructuralExclusion
 from hsds_entity_resolution.core.apply_mitigation import apply_mitigation
 from hsds_entity_resolution.core.clean_entities import clean_entities
 from hsds_entity_resolution.core.cluster_pairs import cluster_pairs
@@ -85,6 +86,8 @@ def run_incremental(
     score_shards: int = 1,
     judge: PairJudge | None = None,
     source_profiles: Mapping[str, str] | None = None,
+    informative_keys: InformativeKeyTable | None = None,
+    structural_exclusion: StructuralExclusion | None = None,
 ) -> IncrementalRunResult:
     """Run all incremental stages and return typed artifacts for downstream consumers.
 
@@ -93,6 +96,10 @@ def run_incremental(
     bundle under ``judge_answers``. ``source_profiles`` maps a source schema to the
     Source Profile text the judge reads for records from it; schemas without an entry
     get an empty slot. Without a judge, outputs are exactly as before.
+
+    ``informative_keys`` and ``structural_exclusion`` drive candidate admission (see
+    :mod:`hsds_entity_resolution.core.admission`); without them every key field is
+    informative and nothing is excluded. Excluded pairs are returned as ``excluded_pairs``.
     """
     _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
@@ -137,6 +144,8 @@ def run_incremental(
         explicit_backfill=explicit_backfill,
         force_rescore=force_rescore,
         progress_logger=logger,
+        informative_keys=informative_keys,
+        structural_exclusion=structural_exclusion,
     )
     logger.stage_completed(
         stage="generate_candidates",
@@ -317,6 +326,7 @@ def run_incremental(
         run_summary=run_summary,
         persistence_artifact_bundle=persistence.persistence_artifact_bundle,
         judge_answers=judge_answers,
+        excluded_pairs=candidates.excluded_pairs,
     )
 
 
@@ -331,8 +341,13 @@ def run_incremental_until_candidates(
     force_rescore: bool = False,
     scope_removed: bool = False,
     progress_logger: IncrementalProgressLogger | None = None,
+    informative_keys: InformativeKeyTable | None = None,
+    structural_exclusion: StructuralExclusion | None = None,
 ) -> CandidatesCheckpointResult:
     """Run pipeline through candidate generation only.
+
+    ``informative_keys`` and ``structural_exclusion`` drive admission as in
+    :func:`run_incremental`.
 
     Returns a :class:`CandidatesCheckpointResult` that can be serialized to
     disk and used as the shared input for per-shard scoring ops, avoiding
@@ -379,6 +394,8 @@ def run_incremental_until_candidates(
         explicit_backfill=explicit_backfill,
         force_rescore=force_rescore,
         progress_logger=logger,
+        informative_keys=informative_keys,
+        structural_exclusion=structural_exclusion,
     )
     logger.stage_completed(
         stage="generate_candidates",
@@ -601,6 +618,7 @@ def run_incremental_after_scored(
         review_queue_items=review_queue.review_queue_items,
         run_summary=run_summary,
         persistence_artifact_bundle=persistence.persistence_artifact_bundle,
+        excluded_pairs=candidates.excluded_pairs,
     )
 
 
