@@ -153,9 +153,6 @@ def _recompute_score_delta_summary(scored_pairs: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(
         {
             "candidates_scored": [scored_pairs.height],
-            "ml_scored_count": [
-                scored_pairs.filter(pl.col("ml_section_score").is_not_null()).height
-            ],
             "duplicate_count": [scored_pairs.filter(pl.col("pair_outcome") == "duplicate").height],
             "maybe_count": [scored_pairs.filter(pl.col("pair_outcome") == "maybe").height],
             "strict_duplicate_count": [strict_dup],
@@ -175,7 +172,6 @@ def _empty_merge_result() -> ScoreCandidatesResult:
         score_delta_summary=pl.DataFrame(
             {
                 "candidates_scored": [0],
-                "ml_scored_count": [0],
                 "duplicate_count": [0],
                 "maybe_count": [0],
                 "strict_duplicate_count": [0],

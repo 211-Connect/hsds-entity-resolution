@@ -47,7 +47,6 @@ class ScoredPairRow(TypedDict):
     model_version: str
     deterministic_section_score: float
     nlp_section_score: float
-    ml_section_score: float | None
     final_score: float
     predicted_duplicate: bool
     pair_outcome: Literal["duplicate", "maybe", "below_maybe"]

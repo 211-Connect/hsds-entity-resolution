@@ -21,25 +21,23 @@ from hsds_entity_resolution.types.frames import PAIR_REASONS_SCHEMA, SCORED_PAIR
 # ---------------------------------------------------------------------------
 
 
-def _ml_disabled_service_config() -> EntityResolutionRunConfig:
-    """Return a service-entity config with ML disabled for deterministic tests."""
+def _service_config() -> EntityResolutionRunConfig:
+    """Return the default service-entity config."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-shard",
         scope_id="scope-shard",
         entity_type="service",
     ).model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
     return EntityResolutionRunConfig.model_validate(payload)
 
 
-def _ml_disabled_org_config() -> EntityResolutionRunConfig:
-    """Return an organization-entity config with ML disabled for passthrough tests."""
+def _org_config() -> EntityResolutionRunConfig:
+    """Return the default organization-entity config."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team-shard-org",
         scope_id="scope-shard-org",
         entity_type="organization",
     ).model_dump()
-    payload["scoring"]["ml"]["ml_enabled"] = False
     return EntityResolutionRunConfig.model_validate(payload)
 
 
@@ -189,7 +187,7 @@ class TestPartitionCandidatePairsForSharding:
 
     def test_org_job_sharded_matches_monolithic(self) -> None:
         """Merged shard results for org pairs must exactly match single-batch output."""
-        config = _ml_disabled_org_config()
+        config = _org_config()
         org_entity_ids = [f"org-{i:03d}" for i in range(12)]
         org_entities = _build_org_entity_frame(org_entity_ids)
         pair_dicts = [
@@ -334,7 +332,6 @@ class TestMergeScoreCandidatesResults:
             score_delta_summary=pl.DataFrame(
                 {
                     "candidates_scored": [0],
-                    "ml_scored_count": [0],
                     "duplicate_count": [0],
                     "maybe_count": [0],
                     "strict_duplicate_count": [0],
@@ -348,7 +345,7 @@ class TestMergeScoreCandidatesResults:
 
     def test_summary_is_recomputed_from_merged_frame(self) -> None:
         """Summary counts must reflect the merged frame, not sums of shard summaries."""
-        config = _ml_disabled_service_config()
+        config = _service_config()
         # Two service pairs, each in its own shard result
         svc_entities = _build_svc_entity_frame(["svc-a", "svc-b", "svc-c", "svc-d"])
         r1 = score_candidates(
@@ -369,7 +366,7 @@ class TestMergeScoreCandidatesResults:
         assert summary["candidates_scored"] == merged.scored_pairs.height
 
     def test_scored_pairs_contain_all_pair_keys(self) -> None:
-        config = _ml_disabled_service_config()
+        config = _service_config()
         svc_entities = _build_svc_entity_frame(
             ["svc-a", "svc-b", "svc-c", "svc-d", "svc-e", "svc-f"]
         )
@@ -405,7 +402,7 @@ class TestMergeScoreCandidatesResults:
 class TestShardsMatchMonolithicRun:
     def test_service_only_sharded_matches_monolithic(self) -> None:
         """Merged shard results must exactly match the single-batch output."""
-        config = _ml_disabled_service_config()
+        config = _service_config()
         entity_ids = [f"svc-{i:03d}" for i in range(12)]
         svc_entities = _build_svc_entity_frame(entity_ids)
         pair_dicts = [
@@ -443,7 +440,7 @@ class TestShardsMatchMonolithicRun:
 
     def test_mixed_org_service_sharded_matches_monolithic(self) -> None:
         """Org rows in shard 0 plus service rows must produce identical output to monolithic."""
-        svc_config = _ml_disabled_service_config()
+        svc_config = _service_config()
         svc_entity_ids = [f"svc-{i:03d}" for i in range(8)]
         org_entity_ids = ["org-a", "org-b", "org-c", "org-d"]
         svc_entities = _build_svc_entity_frame(svc_entity_ids)
@@ -491,7 +488,7 @@ class TestShardsMatchMonolithicRun:
 
     def test_num_shards_greater_than_pairs_matches_monolithic(self) -> None:
         """When num_shards > pair_count some shards are empty; merged output must still match."""
-        config = _ml_disabled_service_config()
+        config = _service_config()
         svc_entities = _build_svc_entity_frame(["svc-a", "svc-b"])
         candidates = _build_candidate_frame([_svc_candidate_pair("svc-a", "svc-b")])
 
@@ -547,7 +544,7 @@ class TestOrgPassthrough:
 
 class TestScoreChunkingParity:
     def test_score_chunking_matches_baseline(self) -> None:
-        config = _ml_disabled_service_config()
+        config = _service_config()
         entity_ids = [f"svc-{i:03d}" for i in range(10)]
         svc_entities = _build_svc_entity_frame(entity_ids)
         pair_dicts = [

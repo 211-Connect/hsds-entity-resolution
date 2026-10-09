@@ -790,3 +790,20 @@ def test_r11_pair_in_maybe_band_is_stable_across_reruns() -> None:
         "No pair removal should be emitted when inputs are identical"
     )
     _assert_pair_retained(run3)
+
+
+def test_final_score_reproduces_pre_1_2_composition() -> None:
+    """Final score equals the pre-1.2.0 det/NLP composition with ML absent.
+
+    Before 1.2.0 the service defaults were det 0.40, NLP 0.40, ML 0.20 and, with ML
+    absent, the score was normalised over the two active sections. Removing the ML
+    section must not move any score.
+    """
+    run = _run_baseline(scope_id="r-reproduce")
+    scored = run.scored_pairs
+    assert scored.height >= 1
+    for row in scored.iter_rows(named=True):
+        previous = (
+            row["deterministic_section_score"] * 0.40 + row["nlp_section_score"] * 0.40
+        ) / 0.80
+        assert row["final_score"] == pytest.approx(previous, abs=1e-12)

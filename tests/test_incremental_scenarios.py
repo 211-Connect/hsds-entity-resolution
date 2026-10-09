@@ -139,7 +139,6 @@ def _scored_pair_row(
         "model_version": "m",
         "deterministic_section_score": final_score,
         "nlp_section_score": final_score,
-        "ml_section_score": None,
         "final_score": final_score,
         "predicted_duplicate": predicted_duplicate,
         "embedding_similarity": embedding_similarity,
@@ -222,10 +221,9 @@ def _assert_not_removed(result: Any, pair_key: str) -> None:
 # Both entities share email + phone + website and use IDENTICAL names so that:
 #   - NLP fuzzy similarity = 1.0  →  clears fuzzy_threshold (0.88)
 #   - det_score = (email 0.22 + phone 0.20 + domain 0.08) / 1.00 = 0.50
-#   - pre_ml = 0.50×0.45 + 1.0×0.35 = 0.575  →  clears ml_gate_threshold (0.55)
-#   - ML fires via embedding_similarity ≈ 0.9997
-#   - final ≈ 0.575 + 0.9997×0.2 ≈ 0.775  →  below duplicate threshold unless
-#     stronger deterministic evidence such as address or identifier also matches
+#   - final = 0.50×0.5625 + 1.0×0.4375 ≈ 0.719  →  in the maybe band, below the
+#     duplicate threshold unless stronger deterministic evidence such as address
+#     or identifier also matches
 # ---------------------------------------------------------------------------
 
 _PAIR_KEY = "org-a__org-b"
@@ -727,7 +725,6 @@ def _dup_pair(
         "model_version": "m",
         "deterministic_section_score": final_score,
         "nlp_section_score": final_score,
-        "ml_section_score": final_score,
         "final_score": final_score,
         "predicted_duplicate": True,
         "review_eligible": True,
@@ -753,7 +750,6 @@ def _maybe_pair(
         "model_version": "m",
         "deterministic_section_score": final_score,
         "nlp_section_score": final_score,
-        "ml_section_score": None,
         "final_score": final_score,
         "predicted_duplicate": False,
         "review_eligible": True,
@@ -1040,7 +1036,6 @@ def test_s3g_contradictory_triangle_limits_transitive_closure() -> None:
             "model_version": ["m", "m", "m"],
             "deterministic_section_score": [0.9, 0.9, 0.1],
             "nlp_section_score": [0.9, 0.9, 0.1],
-            "ml_section_score": [0.9, 0.9, 0.1],
             "final_score": [0.95, 0.94, 0.10],
             "predicted_duplicate": [True, True, False],
             "embedding_similarity": [0.95, 0.94, 0.10],

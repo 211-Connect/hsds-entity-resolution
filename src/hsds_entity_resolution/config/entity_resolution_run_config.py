@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -17,6 +17,32 @@ _SUPPORTED_BLOCKING_OVERLAP_CHANNELS = {
     "address_exact",
 }
 
+_ML_SECTION_REMOVED_MESSAGE = (
+    "The ML scoring section was removed in hsds-entity-resolution 1.2.0: the score is "
+    "deterministic plus NLP only, and the shadow/legacy calibration scores are gone. "
+    "Remove {keys} from this config; deterministic_section_weight and nlp_section_weight "
+    "must now sum to 1.0."
+)
+
+
+def _reject_removed_ml_keys(data: Any, *, removed: tuple[str, ...]) -> Any:
+    """Raise a migration error when a config still carries removed ML keys.
+
+    Args:
+        data: Raw mapping handed to a pydantic ``mode="before"`` validator.
+        removed: Key names that no longer exist in this model.
+
+    Returns:
+        ``data`` unchanged when none of the removed keys are present.
+    """
+    if not isinstance(data, dict):
+        return data
+    present = sorted(key for key in removed if key in data)
+    if present:
+        raise ValueError(_ML_SECTION_REMOVED_MESSAGE.format(keys=", ".join(present)))
+    return data
+
+
 _SUPPORTED_SIGNAL_NAMES = {
     "shared_email",
     "shared_phone",
@@ -28,7 +54,6 @@ _SUPPORTED_SIGNAL_NAMES = {
     "shared_identifier",
     "name_similarity",
     "organization_name_similarity",
-    "ml_score",
 }
 
 
@@ -213,16 +238,20 @@ class FeatureOverrideConfig(BaseStrictModel):
     nlp_enabled: bool | None = None
     deterministic_section_weight: float | None = Field(default=None, ge=0.0, le=1.0)
     nlp_section_weight: float | None = Field(default=None, ge=0.0, le=1.0)
-    ml_section_weight: float | None = Field(default=None, ge=0.0, le=1.0)
     duplicate_threshold: float | None = Field(default=None, ge=0.5, le=0.99)
     maybe_threshold: float | None = Field(default=None, ge=0.3, le=0.95)
     low_maybe_threshold: float | None = Field(default=None, ge=0.2, le=0.9)
-    ml_gate_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     min_review_embedding_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
     min_duplicate_embedding_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
     embedding_floor_exempt_signals: list[str] = Field(default_factory=list)
     review_on_signals: list[str] = Field(default_factory=list)
     suppressions: list[SignalSuppressionConfig] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_ml_overrides(cls, data: Any) -> Any:
+        """Fail with a migration message when removed ML override keys are passed."""
+        return _reject_removed_ml_keys(data, removed=("ml_gate_threshold", "ml_section_weight"))
 
     @model_validator(mode="after")
     def validate_feature_overrides(self) -> FeatureOverrideConfig:
@@ -231,9 +260,7 @@ class FeatureOverrideConfig(BaseStrictModel):
         if unsupported:
             message = f"Unsupported deterministic override names: {unsupported!r}"
             raise ValueError(message)
-        non_deterministic = sorted(
-            set(self.deterministic).intersection({"name_similarity", "ml_score"})
-        )
+        non_deterministic = sorted(set(self.deterministic).intersection({"name_similarity"}))
         if non_deterministic:
             message = (
                 "Non-deterministic signals cannot use deterministic overrides: "
@@ -280,14 +307,10 @@ class FeatureOverrideConfig(BaseStrictModel):
                 "min_review_embedding_similarity"
             )
             raise ValueError(message)
-        section_values = [
-            self.deterministic_section_weight,
-            self.nlp_section_weight,
-            self.ml_section_weight,
-        ]
+        section_values = [self.deterministic_section_weight, self.nlp_section_weight]
         if any(value is not None for value in section_values):
             if not all(value is not None for value in section_values):
-                message = "Section weight overrides must set all three section weights together"
+                message = "Section weight overrides must set both section weights together"
                 raise ValueError(message)
             total = sum(float(value) for value in section_values if value is not None)
             if abs(total - 1.0) > 0.001:
@@ -347,43 +370,28 @@ class SourcePolicyConfig(BaseStrictModel):
         return self
 
 
-class MlConfig(BaseStrictModel):
-    """ML gating controls for optional third scoring section."""
-
-    ml_enabled: bool = False
-    ml_gate_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
-    ml_base_weight: float = Field(default=0.2, ge=0.0, le=0.6)
-    ml_dynamic_weighting_enabled: bool = False
-    ml_threshold_fallback: float = Field(default=0.5, ge=0.0, le=1.0)
-
-
-class CalibrationConfig(BaseStrictModel):
-    """Shadow confidence calibration controls."""
-
-    enabled: bool = True
-    prior_log_odds: float = Field(default=-0.5, ge=-10.0, le=10.0)
-    calibration_version: str = "shadow-log-odds-v1"
-
-
 class ScoringConfig(BaseStrictModel):
     """Top-level scoring constants for one run scope."""
 
-    deterministic_section_weight: float = Field(default=0.45, ge=0.0, le=1.0)
-    nlp_section_weight: float = Field(default=0.35, ge=0.0, le=1.0)
-    ml_section_weight: float = Field(default=0.2, ge=0.0, le=1.0)
+    deterministic_section_weight: float = Field(default=0.5625, ge=0.0, le=1.0)
+    nlp_section_weight: float = Field(default=0.4375, ge=0.0, le=1.0)
     duplicate_threshold: float = Field(default=0.82, ge=0.5, le=0.99)
     maybe_threshold: float = Field(default=0.68, ge=0.3, le=0.95)
     low_maybe_threshold: float = Field(default=0.58, ge=0.2, le=0.9)
     min_reason_count_for_keep: int = Field(default=1, ge=0, le=5)
     deterministic: DeterministicConfig
     nlp: NlpConfig
-    ml: MlConfig
-    calibration: CalibrationConfig
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_ml_scoring(cls, data: Any) -> Any:
+        """Fail with a migration message when removed ML or calibration keys are passed."""
+        return _reject_removed_ml_keys(data, removed=("calibration", "ml", "ml_section_weight"))
 
     @model_validator(mode="after")
     def validate_weighting_rules(self) -> ScoringConfig:
         """Validate cross-field constraints required by the RFC."""
-        total = self.deterministic_section_weight + self.nlp_section_weight + self.ml_section_weight
+        total = self.deterministic_section_weight + self.nlp_section_weight
         if abs(total - 1.0) > 0.001:
             message = "Section weights must sum to 1.0 +/- 0.001"
             raise ValueError(message)
@@ -464,14 +472,8 @@ class EntityResolutionRunConfig(BaseStrictModel):
                     fuzzy_threshold=scoring_values["fuzzy_threshold"],
                     standalone_fuzzy_threshold=scoring_values["standalone_fuzzy_threshold"],
                 ),
-                ml=MlConfig(ml_gate_threshold=scoring_values["ml_gate_threshold"]),
-                calibration=CalibrationConfig(
-                    prior_log_odds=scoring_values["prior_log_odds"],
-                    calibration_version="shadow-log-odds-v1",
-                ),
                 deterministic_section_weight=scoring_values["deterministic_section_weight"],
                 nlp_section_weight=scoring_values["nlp_section_weight"],
-                ml_section_weight=scoring_values["ml_section_weight"],
                 duplicate_threshold=scoring_values["duplicate_threshold"],
                 maybe_threshold=scoring_values["maybe_threshold"],
                 low_maybe_threshold=scoring_values["low_maybe_threshold"],
@@ -519,42 +521,32 @@ def _build_deterministic_defaults(*, entity_type: EntityType) -> DeterministicCo
 
 
 def _build_scoring_defaults(*, entity_type: EntityType) -> dict[str, float]:
-    """Return scalar scoring defaults aligned with RFC baseline table."""
+    """Return scalar scoring defaults aligned with RFC baseline table.
+
+    Section weights are the pre-1.2.0 deterministic/NLP weights renormalised over the
+    two sections that were ever active (organization 0.45/0.35, service 0.40/0.40), so
+    every score computed without the removed ML section is reproduced exactly.
+    """
     if entity_type == "organization":
         return {
-            "deterministic_section_weight": 0.45,
-            "nlp_section_weight": 0.35,
-            "ml_section_weight": 0.20,
+            "deterministic_section_weight": 0.5625,
+            "nlp_section_weight": 0.4375,
             "fuzzy_threshold": 0.88,
             "standalone_fuzzy_threshold": 0.94,
-            "ml_gate_threshold": 0.55,
             "duplicate_threshold": 0.82,
             "maybe_threshold": 0.68,
             "low_maybe_threshold": 0.58,
-            "prior_log_odds": -0.5,
         }
-    # Service-specific calibration notes:
-    # - HSDS services from different 211 schemas are copies of the same AIRS master
-    #   record. Names and phones are identical text, so embedding cosine similarity
-    #   is uniformly ~0.81 for all candidate pairs — the ML section adds zero
-    #   discriminative power for this dataset (confirmed by audit: ML_BIN=0.81 for
-    #   all 13,667 pairs).
-    # - The only discriminative signal is whether the pair also shares an address:
-    #     phone + name only:         score ≈ 0.665  → needs human review
-    #     phone + name + address:    score ≈ 0.733  → high-confidence, auto-cluster
-    # - Section weights are kept at original proportions. Thresholds are calibrated
-    #   to bracket the two observed score clusters:
-    #     duplicate_threshold = 0.70  → phone+name+address (0.733) auto-clusters
-    #     maybe_threshold     = 0.62  → phone+name-only (0.665) enters review queue
+    # Service thresholds bracket the two observed score clusters:
+    #   phone + name only:         score ≈ 0.665  → needs human review
+    #   phone + name + address:    score ≈ 0.733  → high-confidence, auto-cluster
+    #   duplicate_threshold = 0.70, maybe_threshold = 0.62
     return {
-        "deterministic_section_weight": 0.40,
-        "nlp_section_weight": 0.40,
-        "ml_section_weight": 0.20,
+        "deterministic_section_weight": 0.5,
+        "nlp_section_weight": 0.5,
         "fuzzy_threshold": 0.86,
         "standalone_fuzzy_threshold": 0.92,
-        "ml_gate_threshold": 0.50,
         "duplicate_threshold": 0.70,
         "maybe_threshold": 0.62,
         "low_maybe_threshold": 0.54,
-        "prior_log_odds": -0.25,
     }

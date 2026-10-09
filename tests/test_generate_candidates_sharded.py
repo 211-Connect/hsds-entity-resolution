@@ -332,12 +332,7 @@ class TestShardsMatchMonolithicGenerate:
         n_shards = 3
         config = _org_config()
         org_df = self._build_org_frame(n_entities)
-        svc_df = pl.DataFrame(
-            schema={
-                k: pl.Object if isinstance(v, pl.datatypes.classes.DataTypeClass) else v
-                for k, v in pl.DataFrame([_make_entity_row("x", "service", [0.0])]).schema.items()
-            }
-        ).clear()
+        svc_df = pl.DataFrame([_make_entity_row("x", "service", [0.0])]).clear()
         all_ids = list(org_df.get_column("entity_id").to_list())
         changed_df = _changed_entities(all_ids, "organization")
 

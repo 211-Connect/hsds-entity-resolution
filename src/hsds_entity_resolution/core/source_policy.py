@@ -210,16 +210,6 @@ def effective_scoring_values(
             if overrides.nlp_section_weight is not None
             else scoring.nlp_section_weight
         ),
-        "ml_section_weight": (
-            overrides.ml_section_weight
-            if overrides.ml_section_weight is not None
-            else scoring.ml_section_weight
-        ),
-        "ml_gate_threshold": (
-            overrides.ml_gate_threshold
-            if overrides.ml_gate_threshold is not None
-            else scoring.ml.ml_gate_threshold
-        ),
     }
 
 

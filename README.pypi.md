@@ -25,7 +25,7 @@ runs an incremental seven-stage entity-resolution pipeline on your HSDS data:
 |---|---|
 | **Clean entities** | Normalize contact fields, compute content hashes, detect adds/changes/removals since the last run |
 | **Generate candidates** | Block on overlap signals (email, phone, domain, taxonomy, location) to produce candidate pairs |
-| **Score candidates** | Weighted combination of deterministic overlap signals, NLP fuzzy name/description matching, and optional ML scoring |
+| **Score candidates** | Weighted combination of deterministic overlap signals, and NLP fuzzy name/description matching |
 | **Apply mitigation** | Carry forward stable pairs, retire pairs for removed entities, detect pair identity continuity |
 | **Cluster pairs** | Greedy correlation clustering groups high-confidence duplicate pairs into clusters |
 | **Materialize review queue** | Pairs that score above the *maybe* threshold but below *duplicate* are surfaced for human review |
@@ -121,7 +121,7 @@ and detect pair identity continuity across incremental runs.
 | `scope_id` | `str` | `"default"` | Deployment or region identifier |
 | `entity_type` | `"organization" \| "service"` | `"organization"` | Which entity type this instance processes |
 | `policy_version` | `str` | `"hsds-er-v1"` | Scoring policy version tag |
-| `model_version` | `str` | `"embedding-only-v1"` | ML model version tag |
+| `model_version` | `str` | `"embedding-only-v1"` | Embedding model version tag |
 | `explicit_backfill` | `bool` | `False` | Force a full re-run even when no entity changes are detected |
 | `organization_entities_asset_key` | `str` | `"organization_entities"` | Asset key for upstream org entities |
 | `service_entities_asset_key` | `str` | `"service_entities"` | Asset key for upstream service entities |
@@ -183,9 +183,8 @@ Key thresholds:
 |---|---|---|---|
 | `scoring.duplicate_threshold` | `0.82` | `0.70` | Minimum score to auto-cluster as duplicate |
 | `scoring.maybe_threshold` | `0.68` | `0.62` | Minimum score to send to review queue |
-| `scoring.deterministic_section_weight` | `0.45` | `0.40` | Weight of overlap-signal section |
-| `scoring.nlp_section_weight` | `0.35` | `0.40` | Weight of NLP fuzzy-match section |
-| `scoring.ml_section_weight` | `0.20` | `0.20` | Weight of ML section (disabled by default) |
+| `scoring.deterministic_section_weight` | `0.5625` | `0.50` | Weight of overlap-signal section |
+| `scoring.nlp_section_weight` | `0.4375` | `0.50` | Weight of NLP fuzzy-match section; the two must sum to 1 |
 | `scoring.nlp.fuzzy_threshold` | `0.88` | `0.86` | Minimum name similarity to count as NLP match |
 | `blocking.similarity_threshold` | `0.75` | `0.75` | Minimum embedding cosine similarity for blocking |
 | `blocking.max_candidates_per_entity` | `50` | `125` | Maximum candidate pairs per entity |
