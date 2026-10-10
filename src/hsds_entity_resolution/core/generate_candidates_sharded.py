@@ -25,7 +25,7 @@ from hsds_entity_resolution.types.contracts import (
     CleanEntitiesResult,
     GenerateCandidatesResult,
 )
-from hsds_entity_resolution.types.frames import CANDIDATE_PAIR_SCHEMA
+from hsds_entity_resolution.types.frames import CANDIDATE_PAIR_SCHEMA, EXCLUDED_PAIR_SCHEMA
 
 
 def partition_entity_ids_for_sharding(
@@ -106,10 +106,11 @@ def merge_generate_candidates_results(
         One result per generate shard.  Empty results are skipped.
     """
     _log = logging.getLogger(__name__)
+    excluded = _merge_excluded_pairs(results)
     non_empty = [r for r in results if not r.candidate_pairs.is_empty()]
     if not non_empty:
         _log.info("merge_generate_candidates: all shards empty — returning empty result")
-        return _empty_generate_result()
+        return _empty_generate_result(excluded_pairs=excluded)
     combined = pl.concat(
         [r.candidate_pairs for r in non_empty],
         how="diagonal_relaxed",
@@ -132,11 +133,27 @@ def merge_generate_candidates_results(
             "raw_candidate_count": [before],
         }
     )
-    return GenerateCandidatesResult(candidate_pairs=deduped, candidate_summary=summary)
+    return GenerateCandidatesResult(
+        candidate_pairs=deduped, candidate_summary=summary, excluded_pairs=excluded
+    )
 
 
-def _empty_generate_result() -> GenerateCandidatesResult:
+def _merge_excluded_pairs(results: list[GenerateCandidatesResult]) -> pl.DataFrame:
+    """Concatenate per-shard excluded pairs, one row per ``pair_key``."""
+    frames = [r.excluded_pairs for r in results if not r.excluded_pairs.is_empty()]
+    if not frames:
+        return pl.DataFrame(schema=EXCLUDED_PAIR_SCHEMA)
+    return (
+        pl.concat(frames, how="diagonal_relaxed")
+        .unique(subset=["pair_key"], keep="first")
+        .sort(["entity_a_id", "entity_b_id"])
+    )
+
+
+def _empty_generate_result(*, excluded_pairs: pl.DataFrame) -> GenerateCandidatesResult:
+    """Return an empty candidate result that still carries the shards' excluded pairs."""
     return GenerateCandidatesResult(
         candidate_pairs=pl.DataFrame(schema=CANDIDATE_PAIR_SCHEMA),
         candidate_summary=pl.DataFrame({"candidate_count": [0], "raw_candidate_count": [0]}),
+        excluded_pairs=excluded_pairs,
     )

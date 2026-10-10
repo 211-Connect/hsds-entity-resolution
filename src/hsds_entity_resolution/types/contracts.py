@@ -7,7 +7,7 @@ from typing import Any
 
 import polars as pl
 
-from hsds_entity_resolution.types.frames import JUDGE_ANSWERS_SCHEMA
+from hsds_entity_resolution.types.frames import EXCLUDED_PAIR_SCHEMA, JUDGE_ANSWERS_SCHEMA
 
 FrameLike = pl.DataFrame | pl.LazyFrame
 ArtifactBundle = dict[str, Any]
@@ -16,6 +16,11 @@ ArtifactBundle = dict[str, Any]
 def _empty_judge_answers() -> pl.DataFrame:
     """Return an empty judge-answers frame for runs without a judge."""
     return pl.DataFrame(schema=JUDGE_ANSWERS_SCHEMA)
+
+
+def _empty_excluded_pairs() -> pl.DataFrame:
+    """Return an empty excluded-pairs frame for runs without a Structural Exclusion."""
+    return pl.DataFrame(schema=EXCLUDED_PAIR_SCHEMA)
 
 
 @dataclass(frozen=True)
@@ -33,10 +38,14 @@ class CleanEntitiesResult:
 
 @dataclass(frozen=True)
 class GenerateCandidatesResult:
-    """Output contract for candidate generation stage."""
+    """Output contract for candidate generation stage.
+
+    ``excluded_pairs`` holds every pair a Structural Exclusion kept out, with its reason.
+    """
 
     candidate_pairs: pl.DataFrame
     candidate_summary: pl.DataFrame
+    excluded_pairs: pl.DataFrame = field(default_factory=_empty_excluded_pairs)
 
 
 @dataclass(frozen=True)
@@ -103,3 +112,4 @@ class IncrementalRunResult:
     run_summary: pl.DataFrame
     persistence_artifact_bundle: ArtifactBundle
     judge_answers: pl.DataFrame = field(default_factory=_empty_judge_answers)
+    excluded_pairs: pl.DataFrame = field(default_factory=_empty_excluded_pairs)

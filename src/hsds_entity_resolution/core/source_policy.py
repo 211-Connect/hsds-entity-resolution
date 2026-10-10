@@ -1,4 +1,9 @@
-"""Generic source-aware policy resolution for candidate admission and scoring."""
+"""Generic source-aware pair-rule resolution for scoring.
+
+Candidate admission no longer reads the source policy: it follows one generic rule
+(:mod:`hsds_entity_resolution.core.admission`). Pair rules keep choosing scoring
+overrides from the entity type and the two source schemas until ISS-2186.
+"""
 
 from __future__ import annotations
 
@@ -6,13 +11,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from hsds_entity_resolution.config.entity_resolution_run_config import (
-    AdmissionRuleConfig,
     EntityResolutionRunConfig,
     FeatureOverrideConfig,
     ScoringConfig,
 )
 
-DEFAULT_BLOCKING_RULE_ID = "default_taxonomy_and_non_taxonomy"
 DEFAULT_POLICY_RULE_ID = "default"
 
 
@@ -23,14 +26,6 @@ class PairPolicyContext:
     entity_type: str
     source_schema_a: str | None
     source_schema_b: str | None
-
-
-@dataclass(frozen=True)
-class AdmissionDecision:
-    """Candidate-admission result for one above-threshold pair."""
-
-    admitted: bool
-    rule_id: str | None
 
 
 @dataclass(frozen=True)
@@ -87,64 +82,6 @@ def source_relation_matches(
     if relation == "cross_profile":
         return bool(left_profiles and right_profiles and not shared_profiles)
     return False
-
-
-def admission_rule_matches_context(
-    *,
-    rule: AdmissionRuleConfig,
-    context: PairPolicyContext,
-    config: EntityResolutionRunConfig,
-    similarity: float,
-) -> bool:
-    """Return true when a candidate admission rule applies to the pair context."""
-    if context.entity_type not in rule.entity_types:
-        return False
-    if rule.min_embedding_similarity is not None and similarity < rule.min_embedding_similarity:
-        return False
-    if not source_relation_matches(relation=rule.source_relation, context=context, config=config):
-        return False
-    return _source_profiles_match(
-        config=config,
-        context=context,
-        relation=rule.source_relation,
-        source_profiles=rule.source_profiles,
-    )
-
-
-def decide_candidate_admission(
-    *,
-    config: EntityResolutionRunConfig,
-    context: PairPolicyContext,
-    similarity: float,
-    channel_hits: set[str],
-    taxonomy_pass: bool,
-    non_taxonomy_pass: bool,
-    default_admission_allowed: bool = True,
-) -> AdmissionDecision:
-    """Apply ordered generic admission rules with backward-compatible fallback."""
-    for rule in config.source_policy.admission_rules:
-        if not admission_rule_matches_context(
-            rule=rule,
-            context=context,
-            config=config,
-            similarity=similarity,
-        ):
-            continue
-        if rule.none_of and channel_hits.intersection(rule.none_of):
-            continue
-        if rule.all_of and not set(rule.all_of).issubset(channel_hits):
-            continue
-        if rule.any_of and not channel_hits.intersection(rule.any_of):
-            continue
-        return AdmissionDecision(admitted=True, rule_id=rule.rule_id)
-    return AdmissionDecision(
-        admitted=default_admission_allowed and taxonomy_pass and non_taxonomy_pass,
-        rule_id=(
-            DEFAULT_BLOCKING_RULE_ID
-            if default_admission_allowed and taxonomy_pass and non_taxonomy_pass
-            else None
-        ),
-    )
 
 
 def resolve_scoring_policy(

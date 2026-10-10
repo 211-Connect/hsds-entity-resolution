@@ -211,21 +211,6 @@ def taxonomy_parent_codes(code: str) -> set[str]:
     return set(hierarchy[:-1])
 
 
-def taxonomy_codes_match_or_parent_child(*, left_code: str, right_code: str) -> bool:
-    """Return true for exact HSIS matches or direct parent-child relationships only."""
-    left_hierarchy = taxonomy_hierarchy_levels(left_code)
-    right_hierarchy = taxonomy_hierarchy_levels(right_code)
-    if not left_hierarchy or not right_hierarchy:
-        return False
-    if left_hierarchy[-1] == right_hierarchy[-1]:
-        return True
-    if len(left_hierarchy) == len(right_hierarchy) + 1:
-        return left_hierarchy[:-1] == right_hierarchy
-    if len(right_hierarchy) == len(left_hierarchy) + 1:
-        return right_hierarchy[:-1] == left_hierarchy
-    return False
-
-
 def _first_non_empty(*, item: Mapping[str, Any], keys: tuple[str, ...]) -> str:
     """Return first present and normalized scalar value for known aliases."""
     for key in keys:

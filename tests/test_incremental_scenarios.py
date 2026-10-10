@@ -451,12 +451,13 @@ def test_s1e_entity_change_causes_candidate_lost() -> None:
 
     # Run 2: entity A changes its identifier (triggers content_hash change so
     # candidates are re-generated), its embedding becomes orthogonal to B
-    # (cosine ≈ 0.0 < 0.75 blocking threshold) AND it stops sharing contacts
-    # with B. Shared contacts seed a candidate on their own, so all three must
-    # change for the pair to stop being generated.
+    # (cosine ≈ 0.0 < 0.75 embedding floor) AND it stops sharing contacts and
+    # its name with B. Shared Informative Keys (contacts, address, name) admit a
+    # candidate on their own, so all of them must change for the pair to stop
+    # being generated.
     entity_a_ortho = _entity_row(
         "org-a",
-        "North Clinic",
+        "Northside Family Clinic",
         emails=["north@clinic-a.example.org"],
         phones=["5550100001"],
         websites=["https://clinic-a.example.org"],

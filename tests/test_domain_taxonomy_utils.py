@@ -9,14 +9,12 @@ from hsds_entity_resolution.core.domain_utils import (
     domain_overlap_score,
     extract_contact_domains,
     extract_domain,
-    extract_gov_website_registered_domains,
 )
 from hsds_entity_resolution.core.taxonomy_utils import (
     clean_services_rollup,
     clean_taxonomy_objects,
     extract_entity_taxonomy_codes,
     extract_taxonomy_codes,
-    taxonomy_codes_match_or_parent_child,
     taxonomy_hierarchy_levels,
     taxonomy_parent_codes,
 )
@@ -150,36 +148,6 @@ class TestExtractContactDomains:
         assert "services.unitedway.org" in result
         assert "outreach.unitedway.org" in result
         assert len(result) == 2
-
-
-class TestExtractGovWebsiteRegisteredDomains:
-    """Unit tests for website-only public-sector candidate seeding domains."""
-
-    def test_extracts_registrable_gov_domain_from_subdomain(self) -> None:
-        result = extract_gov_website_registered_domains(
-            websites_value=["https://localhelp.healthcare.gov/search"],
-        )
-
-        assert result == {"healthcare.gov"}
-
-    def test_ignores_non_gov_website_domains(self) -> None:
-        result = extract_gov_website_registered_domains(
-            websites_value=["https://www.alpha.org/services"],
-        )
-
-        assert result == set()
-
-    def test_ignores_email_domains(self) -> None:
-        result = extract_gov_website_registered_domains(
-            websites_value=["mailto:hello@medicare.gov"],
-        )
-
-        assert result == set()
-
-
-# ===========================================================================
-# domain_utils — domain_overlap_score (graded URL matching)
-# ===========================================================================
 
 
 class TestDomainOverlapScore:
@@ -508,33 +476,6 @@ class TestTaxonomyParentCodes:
 
     def test_empty_string_returns_empty_set(self) -> None:
         assert taxonomy_parent_codes("") == set()
-
-
-class TestTaxonomyDirectRelationships:
-    """Tests for strict taxonomy blocking relationships."""
-
-    def test_exact_match_is_allowed(self) -> None:
-        assert taxonomy_codes_match_or_parent_child(left_code="BD", right_code="BD")
-
-    def test_direct_parent_child_is_allowed(self) -> None:
-        assert taxonomy_codes_match_or_parent_child(left_code="BD", right_code="BD-1800")
-
-    def test_direct_child_parent_is_allowed(self) -> None:
-        assert taxonomy_codes_match_or_parent_child(left_code="BD-1800", right_code="BD")
-
-    def test_siblings_are_not_allowed(self) -> None:
-        assert not taxonomy_codes_match_or_parent_child(
-            left_code="BD-1800",
-            right_code="BD-1900",
-        )
-
-    def test_grandparent_grandchild_is_not_allowed(self) -> None:
-        assert not taxonomy_codes_match_or_parent_child(left_code="B", right_code="BD-1800")
-
-
-# ===========================================================================
-# taxonomy_utils — extract_entity_taxonomy_codes
-# ===========================================================================
 
 
 class TestExtractEntityTaxonomyCodes:

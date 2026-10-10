@@ -23,19 +23,6 @@ def test_weight_sum_validation_rejects_invalid_configuration() -> None:
         _ = EntityResolutionRunConfig.model_validate(payload)
 
 
-def test_overlap_prefilter_channels_reject_unknown_channel() -> None:
-    """Blocking config should reject unsupported overlap prefilter channels."""
-    payload = EntityResolutionRunConfig.defaults_for_entity_type(
-        team_id="team",
-        scope_id="scope",
-        entity_type="organization",
-    ).model_dump()
-    payload["blocking"]["overlap_prefilter_channels"] = ["email", "zipcode"]
-
-    with pytest.raises(ValueError, match="Unsupported overlap prefilter channels"):
-        _ = EntityResolutionRunConfig.model_validate(payload)
-
-
 def test_source_policy_rejects_unknown_profile_reference() -> None:
     """Source policy rules must reference configured abstract profiles."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
@@ -43,13 +30,12 @@ def test_source_policy_rejects_unknown_profile_reference() -> None:
         scope_id="scope",
         entity_type="service",
     ).model_dump()
-    payload["source_policy"]["admission_rules"] = [
+    payload["source_policy"]["pair_rules"] = [
         {
             "rule_id": "missing-profile-rule",
             "entity_types": ["service"],
             "source_relation": "same_profile",
             "source_profiles": ["missing"],
-            "all_of": ["address_exact"],
         }
     ]
 
@@ -156,7 +142,7 @@ def test_source_policy_rejects_duplicate_floor_below_review_floor() -> None:
 
 
 def test_source_policy_accepts_cross_source_same_profile_relation() -> None:
-    """Source policy supports cross-source admission within a shared abstract profile."""
+    """Pair rules support the cross-source relation within a shared abstract profile."""
     payload = EntityResolutionRunConfig.defaults_for_entity_type(
         team_id="team",
         scope_id="scope",
@@ -165,13 +151,12 @@ def test_source_policy_accepts_cross_source_same_profile_relation() -> None:
     payload["source_policy"]["source_profiles"] = {
         "PROFILE_SHARED": {"source_schemas": ["SOURCE_A", "SOURCE_B"]}
     }
-    payload["source_policy"]["admission_rules"] = [
+    payload["source_policy"]["pair_rules"] = [
         {
-            "rule_id": "shared-profile-cross-source-address",
+            "rule_id": "shared-profile-cross-source",
             "entity_types": ["service"],
             "source_relation": "cross_source_same_profile",
             "source_profiles": ["PROFILE_SHARED"],
-            "all_of": ["address_exact"],
         }
     ]
     payload["source_policy"]["pair_rules"] = [
@@ -186,7 +171,7 @@ def test_source_policy_accepts_cross_source_same_profile_relation() -> None:
 
     config = EntityResolutionRunConfig.model_validate(payload)
 
-    assert config.source_policy.admission_rules[0].source_relation == "cross_source_same_profile"
+    assert config.source_policy.pair_rules[0].source_relation == "cross_source_same_profile"
     assert config.source_policy.pair_rules[0].source_relation == "cross_source_same_profile"
 
 

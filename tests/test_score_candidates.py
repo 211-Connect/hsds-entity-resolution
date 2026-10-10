@@ -722,7 +722,6 @@ def test_score_candidates_source_policy_can_disable_name_similarity() -> None:
     payload = _default_org_config().model_dump()
     payload["source_policy"] = {
         "source_profiles": {"PROFILE_SHARED": {"source_schemas": ["SOURCE_A"]}},
-        "admission_rules": [],
         "pair_rules": [
             {
                 "rule_id": "disable-name",
@@ -757,7 +756,6 @@ def test_score_candidates_source_policy_suppresses_name_when_taxonomy_contribute
     payload = _default_org_config().model_dump()
     payload["source_policy"] = {
         "source_profiles": {"PROFILE_SHARED": {"source_schemas": ["SOURCE_A"]}},
-        "admission_rules": [],
         "pair_rules": [
             {
                 "rule_id": "taxonomy-name-redundant",
@@ -804,7 +802,6 @@ def test_score_candidates_source_policy_overrides_weights_and_thresholds() -> No
     payload["scoring"]["low_maybe_threshold"] = 0.35
     payload["source_policy"] = {
         "source_profiles": {"PROFILE_SHARED": {"source_schemas": ["SOURCE_A"]}},
-        "admission_rules": [],
         "pair_rules": [
             {
                 "rule_id": "email-only-promoted",
@@ -857,7 +854,6 @@ def test_score_candidates_source_policy_any_relation_applies_cross_profile_org_p
             "PROFILE_WELLSKY": {"source_schemas": ["SOURCE_A"]},
             "PROFILE_ICAROL": {"source_schemas": ["SOURCE_B"]},
         },
-        "admission_rules": [],
         "pair_rules": [
             {
                 "rule_id": "il211-org-any",
@@ -1280,7 +1276,6 @@ def _wellsky_reconstruction_config() -> EntityResolutionRunConfig:
     ).model_dump()
     payload["source_policy"] = {
         "source_profiles": {"WELLSKY": {"source_schemas": ["211HSIS"]}},
-        "admission_rules": [],
         "pair_rules": [
             {
                 "rule_id": "wellsky-reconstruction",
@@ -1322,7 +1317,6 @@ def _v5_identity_config() -> EntityResolutionRunConfig:
             "wellsky": {"source_schemas": ["dupagec211", "lakecou211", "uwgsl211"]},
             "icarol": {"source_schemas": ["ne211_v2", "metroch211"]},
         },
-        "admission_rules": [],
         "pair_rules": [
             {
                 "rule_id": "v5-cross-system",

@@ -76,6 +76,18 @@ CANDIDATE_PAIR_SCHEMA: dict[str, Any] = {
     "blocking_rule_id": pl.String,
 }
 
+# Pairs a Structural Exclusion kept out of candidates, with the caller's reason.
+EXCLUDED_PAIR_SCHEMA: dict[str, Any] = {
+    "pair_key": pl.String,
+    "entity_a_id": pl.String,
+    "entity_b_id": pl.String,
+    "entity_type": pl.String,
+    "embedding_similarity": pl.Float64,
+    "source_schema_a": pl.String,
+    "source_schema_b": pl.String,
+    "exclusion_reason": pl.String,
+}
+
 # ---------------------------------------------------------------------------
 # Stage 3 — Score Candidates
 # ---------------------------------------------------------------------------
