@@ -43,6 +43,14 @@ A schema missing from the table, or a field missing for a schema, counts as info
 StructuralExclusion: TypeAlias = Callable[[Mapping[str, Any], Mapping[str, Any]], str | None]
 """``(entity_a, entity_b) -> reason`` when the pair is different by construction, else ``None``."""
 
+KeyValueFilter: TypeAlias = Callable[[Mapping[str, Any], KeyField, set[str]], set[str]]
+"""``(entity, field, values) -> values`` narrowing one record's key values before matching.
+
+For values that never identify a record in a given source (a service name that is the
+record's own category label, an address of a placeholder location). It can only remove
+values: anything it returns that ``key_values`` did not produce is ignored.
+"""
+
 EMBEDDING_FLOOR_RULE_ID = "embedding_floor"
 EMBEDDING_FLOOR_REASON_CODE = "embedding_floor"
 INFORMATIVE_KEY_RULE_PREFIX = "informative_key:"
@@ -161,6 +169,25 @@ def key_values(entity: Mapping[str, Any], field: KeyField) -> set[str]:
     if field == "website":
         return set(clean_string_list(entity.get("websites")))
     return set(_address_values(entity.get("locations")))
+
+
+def filtered_key_values(
+    entity: Mapping[str, Any], field: KeyField, key_value_filter: KeyValueFilter | None
+) -> set[str]:
+    """Return a record's key values after the caller's optional filter.
+
+    Args:
+        entity: A cleaned entity row.
+        field: Key field.
+        key_value_filter: The caller's filter, or ``None``.
+
+    Returns:
+        The values that may admit a pair; never more than :func:`key_values` returns.
+    """
+    values = key_values(entity, field)
+    if key_value_filter is None or not values:
+        return values
+    return values & key_value_filter(entity, field, set(values))
 
 
 def _address_values(locations_value: Any) -> list[str]:

@@ -9,7 +9,11 @@ from dataclasses import dataclass
 import polars as pl
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
-from hsds_entity_resolution.core.admission import InformativeKeyTable, StructuralExclusion
+from hsds_entity_resolution.core.admission import (
+    InformativeKeyTable,
+    KeyValueFilter,
+    StructuralExclusion,
+)
 from hsds_entity_resolution.core.apply_mitigation import apply_mitigation
 from hsds_entity_resolution.core.clean_entities import clean_entities
 from hsds_entity_resolution.core.cluster_pairs import cluster_pairs
@@ -88,6 +92,7 @@ def run_incremental(
     source_profiles: Mapping[str, str] | None = None,
     informative_keys: InformativeKeyTable | None = None,
     structural_exclusion: StructuralExclusion | None = None,
+    key_value_filter: KeyValueFilter | None = None,
 ) -> IncrementalRunResult:
     """Run all incremental stages and return typed artifacts for downstream consumers.
 
@@ -97,9 +102,10 @@ def run_incremental(
     Source Profile text the judge reads for records from it; schemas without an entry
     get an empty slot. Without a judge, outputs are exactly as before.
 
-    ``informative_keys`` and ``structural_exclusion`` drive candidate admission (see
-    :mod:`hsds_entity_resolution.core.admission`); without them every key field is
-    informative and nothing is excluded. Excluded pairs are returned as ``excluded_pairs``.
+    ``informative_keys``, ``structural_exclusion`` and ``key_value_filter`` drive candidate
+    admission (see :mod:`hsds_entity_resolution.core.admission`); without them every key
+    field is informative, every key value counts and nothing is excluded. Excluded pairs are
+    returned as ``excluded_pairs``.
     """
     _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
@@ -146,6 +152,7 @@ def run_incremental(
         progress_logger=logger,
         informative_keys=informative_keys,
         structural_exclusion=structural_exclusion,
+        key_value_filter=key_value_filter,
     )
     logger.stage_completed(
         stage="generate_candidates",
@@ -343,6 +350,7 @@ def run_incremental_until_candidates(
     progress_logger: IncrementalProgressLogger | None = None,
     informative_keys: InformativeKeyTable | None = None,
     structural_exclusion: StructuralExclusion | None = None,
+    key_value_filter: KeyValueFilter | None = None,
 ) -> CandidatesCheckpointResult:
     """Run pipeline through candidate generation only.
 
@@ -396,6 +404,7 @@ def run_incremental_until_candidates(
         progress_logger=logger,
         informative_keys=informative_keys,
         structural_exclusion=structural_exclusion,
+        key_value_filter=key_value_filter,
     )
     logger.stage_completed(
         stage="generate_candidates",

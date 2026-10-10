@@ -31,11 +31,12 @@ from hsds_entity_resolution.core.admission import (
     KEY_FIELDS,
     InformativeKeyTable,
     KeyField,
+    KeyValueFilter,
     StructuralExclusion,
+    filtered_key_values,
     informative_key_reason_code,
     informative_key_rule_id,
     is_informative,
-    key_values,
 )
 from hsds_entity_resolution.core.dataframe_utils import frame_with_schema
 from hsds_entity_resolution.observability import IncrementalProgressLogger
@@ -51,6 +52,7 @@ class AdmissionInputs:
 
     informative_keys: InformativeKeyTable | None
     structural_exclusion: StructuralExclusion | None
+    key_value_filter: KeyValueFilter | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,7 @@ def generate_candidates(
     anchor_ids_subset: frozenset[str] | None = None,
     informative_keys: InformativeKeyTable | None = None,
     structural_exclusion: StructuralExclusion | None = None,
+    key_value_filter: KeyValueFilter | None = None,
 ) -> GenerateCandidatesResult:
     """Generate candidate pairs by embedding floor and Informative Keys.
 
@@ -140,6 +143,8 @@ def generate_candidates(
         informative_keys: Per-schema key informativeness; ``None`` makes every key
             field informative everywhere.
         structural_exclusion: Optional veto ``(entity_a, entity_b) -> reason | None``.
+        key_value_filter: Optional ``(entity, field, values) -> values`` that removes key
+            values which never identify a record in that source.
 
     Returns:
         Candidate pairs, a one-row summary, and the excluded pairs with reasons.
@@ -149,7 +154,9 @@ def generate_candidates(
     if delta_entities.is_empty() and not full_scope_rescore:
         return _empty_result()
     admission = AdmissionInputs(
-        informative_keys=informative_keys, structural_exclusion=structural_exclusion
+        informative_keys=informative_keys,
+        structural_exclusion=structural_exclusion,
+        key_value_filter=key_value_filter,
     )
     outputs = [
         _generate_for_entity_type(
@@ -504,7 +511,7 @@ def _collect_informative_key_candidates(
     state: BlockingState,
 ) -> int:
     """Admit every record sharing an informative key value with an anchor."""
-    indexes = _build_key_indexes(rows=matrix.rows, informative_keys=admission.informative_keys)
+    indexes = _build_key_indexes(rows=matrix.rows, admission=admission)
     max_pairs_per_anchor = config.chunking.max_contact_overlap_pairs_per_anchor
     max_fanout = config.chunking.max_contact_index_fanout
     admitted = 0
@@ -516,7 +523,7 @@ def _collect_informative_key_candidates(
             continue
         anchor = matrix.rows[anchor_idx]
         shared, truncated = _shared_keys_by_candidate(
-            anchor=anchor, indexes=indexes, max_fanout=max_fanout
+            anchor=anchor, indexes=indexes, max_fanout=max_fanout, admission=admission
         )
         index_keys_truncated += truncated
         count, hit_cap = _admit_key_candidates(
@@ -539,9 +546,7 @@ def _collect_informative_key_candidates(
     return admitted
 
 
-def _build_key_indexes(
-    *, rows: list[dict[str, Any]], informative_keys: InformativeKeyTable | None
-) -> KeyIndexes:
+def _build_key_indexes(*, rows: list[dict[str, Any]], admission: AdmissionInputs) -> KeyIndexes:
     """Build one inverted index per key field over records where the field is informative.
 
     A record contributes a field's values only when the field is informative in its
@@ -552,9 +557,9 @@ def _build_key_indexes(
         schema = str(row.get("source_schema") or "")
         entity_id = str(row["entity_id"])
         for key in KEY_FIELDS:
-            if not is_informative(informative_keys, schema=schema, field=key):
+            if not is_informative(admission.informative_keys, schema=schema, field=key):
                 continue
-            for value in key_values(row, key):
+            for value in filtered_key_values(row, key, admission.key_value_filter):
                 indexes[key].setdefault(value, set()).add(entity_id)
     return indexes
 
@@ -564,6 +569,7 @@ def _shared_keys_by_candidate(
     anchor: dict[str, Any],
     indexes: KeyIndexes,
     max_fanout: int | None,
+    admission: AdmissionInputs,
 ) -> tuple[dict[str, set[KeyField]], int]:
     """Return candidate id → key fields shared with the anchor, and truncated index keys.
 
@@ -574,7 +580,7 @@ def _shared_keys_by_candidate(
     truncated = 0
     anchor_id = str(anchor["entity_id"])
     for key, index in indexes.items():
-        for value in key_values(anchor, key):
+        for value in filtered_key_values(anchor, key, admission.key_value_filter):
             matches = index.get(value, set())
             if anchor_id not in matches:
                 continue

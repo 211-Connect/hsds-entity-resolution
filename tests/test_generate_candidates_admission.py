@@ -482,3 +482,56 @@ def test_overview_log_reports_floor_keys_and_exclusions(caplog: pytest.LogCaptur
     assert "floor=0.750" in overview
     assert "excluded=1" in overview
     assert "key_admitted=0" in overview
+
+
+# ---------------------------------------------------------------------------
+# Caller key-value filter
+# ---------------------------------------------------------------------------
+
+
+def _drop_category_names(entity: Mapping[str, Any], field: str, values: set[str]) -> set[str]:
+    """A name that is the record's own category label never identifies it."""
+    if field != "name":
+        return values
+    labels = {str(term.get("name", "")).strip().lower() for term in entity["taxonomies"]}
+    return values - labels
+
+
+_PANTRY_TERM = [{"code": "BD-1800", "name": "Food Pantries"}]
+
+
+def _run_filtered(services: pl.DataFrame, key_filter: Any) -> pl.DataFrame:
+    return generate_candidates(
+        denormalized_organization=_empty_frame(),
+        denormalized_service=services,
+        changed_entities=_changed("svc-a"),
+        config=_config(),
+        explicit_backfill=False,
+        key_value_filter=key_filter,
+    ).candidate_pairs
+
+
+def test_a_filtered_key_value_no_longer_admits_but_other_keys_still_do() -> None:
+    labelled = _services(
+        embeddings=_LOW_SIMILARITY,
+        names=("Food Pantries", "Food Pantries"),
+        taxonomies=(_PANTRY_TERM, _PANTRY_TERM),
+    )
+    with_phone = _services(
+        embeddings=_LOW_SIMILARITY,
+        names=("Food Pantries", "Food Pantries"),
+        phones=(["5550100199"], ["5550100199"]),
+        taxonomies=(_PANTRY_TERM, _PANTRY_TERM),
+    )
+
+    assert _run_filtered(labelled, None).height == 1
+    assert _run_filtered(labelled, _drop_category_names).is_empty()
+    pair = _run_filtered(with_phone, _drop_category_names).row(0, named=True)
+    assert pair["blocking_rule_id"] == "informative_key:phone"
+
+
+def test_a_key_value_filter_cannot_add_values() -> None:
+    def invent(entity: Mapping[str, Any], field: str, values: set[str]) -> set[str]:
+        return values | {"invented"}
+
+    assert _run_filtered(_services(embeddings=_LOW_SIMILARITY), invent).is_empty()
