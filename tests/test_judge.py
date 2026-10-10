@@ -66,6 +66,55 @@ def _service_row(entity_id: str, **overrides: Any) -> dict[str, Any]:
     return row
 
 
+def _site(address: str, city: str, state: str, postal_code: str) -> SiteState:
+    """An unnamed, untyped site with the given address components."""
+    return SiteState(
+        name="", location_type="", address=address, city=city, state=state, postal_code=postal_code
+    )
+
+
+def test_sites_carry_their_name_and_location_type() -> None:
+    """A site's name and HSDS location type reach the judge; matching is unchanged."""
+    state = build_pair_state(
+        pair_key="a__b",
+        entity_type="service",
+        entity_a=_service_row(
+            "a",
+            locations=[
+                {
+                    "name": " Main Office ",
+                    "location_type": " Physical ",
+                    "address_1": "100 Example Way.",
+                    "city": "Westfield",
+                    "postal_code": "00101",
+                }
+            ],
+        ),
+        entity_b=_service_row("b"),
+        pair_outcome="maybe",
+    )
+
+    (site,) = state.record_a.sites
+    assert site.name == "Main Office"
+    assert site.location_type == "physical"
+    assert state.site_comparison == "same address"
+
+
+def test_a_state_without_a_prior_score_sends_no_trace_of_it() -> None:
+    """``pair_outcome=None`` leaves the previous matcher's verdict out of the state."""
+    state = build_pair_state(
+        pair_key="a__b",
+        entity_type="service",
+        entity_a=_service_row("a"),
+        entity_b=_service_row("b"),
+        pair_outcome=None,
+    )
+
+    assert state.prior_score is None
+    assert "prior_score" not in state.to_dict()
+    assert "previous matcher" not in str(state.to_dict())
+
+
 def test_state_fills_hsds_fields_and_leaves_profile_slots_empty() -> None:
     """The engine fills HSDS text, computes site and prior words, and leaves profiles empty."""
     state = build_pair_state(
@@ -91,7 +140,14 @@ def test_state_fills_hsds_fields_and_leaves_profile_slots_empty() -> None:
     assert record.phones == ("5550100199", "5550100199 x 4")
     assert record.websites == ("https://www.example.org/Pantry",)
     assert record.sites == (
-        SiteState(address="100 example way", city="westfield", state="zz", postal_code="00101"),
+        SiteState(
+            name="",
+            location_type="",
+            address="100 example way",
+            city="westfield",
+            state="zz",
+            postal_code="00101",
+        ),
     )
     assert state.site_comparison == "same address"
     assert state.prior_score == "the previous matcher would send this pair to human review"
@@ -149,20 +205,20 @@ def test_source_profile_slots_pass_through_verbatim(profile: str) -> None:
 @pytest.mark.parametrize(
     ("sites_a", "sites_b", "expected"),
     [
-        ([], [SiteState("1 a st", "x", "zz", "00001")], "unknown"),
+        ([], [_site("1 a st", "x", "zz", "00001")], "unknown"),
         (
-            [SiteState("1 a st", "x", "zz", "00001")],
-            [SiteState("1 a st", "x", "zz", "00001")],
+            [_site("1 a st", "x", "zz", "00001")],
+            [_site("1 a st", "x", "zz", "00001")],
             "same address",
         ),
         (
-            [SiteState("1 a st", "x", "zz", "00001")],
-            [SiteState("2 b st", "x", "zz", "00001")],
+            [_site("1 a st", "x", "zz", "00001")],
+            [_site("2 b st", "x", "zz", "00001")],
             "same city",
         ),
         (
-            [SiteState("1 a st", "x", "zz", "00001")],
-            [SiteState("1 a st", "y", "zz", "00002")],
+            [_site("1 a st", "x", "zz", "00001")],
+            [_site("1 a st", "y", "zz", "00002")],
             "different",
         ),
     ],

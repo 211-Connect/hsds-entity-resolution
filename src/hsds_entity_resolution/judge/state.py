@@ -1,8 +1,8 @@
 """The open state schema a Pair Judge reads for one candidate pair.
 
 The state carries both records as structured HSDS text, the facts code already
-computed (how the two records' sites compare, the prior score as a named bucket), and
-one free-text Source Profile slot per side. It deliberately carries nothing numeric
+computed (how the two records' sites compare, optionally the prior score as a named
+bucket), and one free-text Source Profile slot per side. It deliberately carries nothing numeric
 that code could have compared: phones are digit strings for reading, not for the
 model to match, and the site comparison arrives as a word.
 
@@ -47,8 +47,10 @@ _POSTAL_KEYS = ("postal_code", "postal", "zip", "zipcode")
 
 @dataclass(frozen=True)
 class SiteState:
-    """One physical site of a record, as address components."""
+    """One site of a record: its name, its HSDS location type and its address components."""
 
+    name: str
+    location_type: str
     address: str
     city: str
     state: str
@@ -83,13 +85,20 @@ class PairState:
     record_a: RecordState
     record_b: RecordState
     site_comparison: SiteComparison
-    prior_score: PriorScoreBucket
+    prior_score: PriorScoreBucket | None
     source_profile_a: str
     source_profile_b: str
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the state as JSON-ready nested dicts and lists."""
-        return asdict(self)
+        """Return the state as JSON-ready nested dicts and lists.
+
+        ``prior_score`` is left out when ``None``, so a caller that does not want the
+        judge anchored on the previous matcher sends no trace of it.
+        """
+        payload = asdict(self)
+        if self.prior_score is None:
+            del payload["prior_score"]
+        return payload
 
     def estimated_tokens(self) -> int:
         """Estimate the state's size in model tokens (four characters per token).
@@ -123,7 +132,7 @@ def build_pair_state(
     entity_type: str,
     entity_a: Mapping[str, Any],
     entity_b: Mapping[str, Any],
-    pair_outcome: str,
+    pair_outcome: str | None,
     source_profile_a: str = "",
     source_profile_b: str = "",
 ) -> PairState:
@@ -134,7 +143,8 @@ def build_pair_state(
         entity_type: ``organization`` or ``service``.
         entity_a: Clean entity row for side A (a ``CLEAN_ENTITY_SCHEMA`` row).
         entity_b: Clean entity row for side B.
-        pair_outcome: The scoring stage's outcome for the pair, named as a bucket.
+        pair_outcome: The scoring stage's outcome for the pair, named as a bucket, or
+            ``None`` to leave the prior score out of the state.
         source_profile_a: Caller-supplied Source Profile text for side A's source;
             passed through verbatim.
         source_profile_b: Caller-supplied Source Profile text for side B's source.
@@ -150,7 +160,7 @@ def build_pair_state(
         record_a=record_a,
         record_b=record_b,
         site_comparison=compare_sites(record_a.sites, record_b.sites),
-        prior_score=prior_score_bucket(pair_outcome),
+        prior_score=None if pair_outcome is None else prior_score_bucket(pair_outcome),
         source_profile_a=source_profile_a,
         source_profile_b=source_profile_b,
     )
@@ -271,6 +281,8 @@ def _sites(value: object) -> tuple[SiteState, ...]:
         if not isinstance(location, Mapping):
             continue
         site = SiteState(
+            name=_text(location.get("name")),
+            location_type=_text(location.get("location_type")).lower(),
             address=normalize_address_component(_first_present(location, _STREET_KEYS)),
             city=normalize_address_component(_first_present(location, ("city",))),
             state=normalize_address_component(_first_present(location, ("state",))),
