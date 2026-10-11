@@ -1,7 +1,7 @@
 [project]
 name = "hsds-entity-resolution"
 requires-python = ">=3.10,<3.15"
-version = "2.1.0"
+version = "2.2.0"
 description = "HSDS entity resolution: candidate generation, scoring, a Pair Judge contract and clustering, with a Dagster component."
 readme = "README.pypi.md"
 keywords = ["dagster", "entity-resolution", "hsds", "deduplication"]

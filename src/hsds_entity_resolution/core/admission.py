@@ -51,6 +51,15 @@ record's own category label, an address of a placeholder location). It can only 
 values: anything it returns that ``key_values`` did not produce is ignored.
 """
 
+KeyCorroboration: TypeAlias = Callable[[Mapping[str, Any], Mapping[str, Any], KeyField], bool]
+"""``(entity_a, entity_b, field) -> admits`` deciding whether a shared key admits a pair.
+
+For a key that identifies a record only in context (a program name that repeats across
+agencies and identifies a service only near the other one). Consulted once per shared
+field of a key-sharing pair; a field it rejects does not admit the pair. It never affects
+the embedding floor, and a pair can still be admitted by another shared field.
+"""
+
 EMBEDDING_FLOOR_RULE_ID = "embedding_floor"
 EMBEDDING_FLOOR_REASON_CODE = "embedding_floor"
 INFORMATIVE_KEY_RULE_PREFIX = "informative_key:"

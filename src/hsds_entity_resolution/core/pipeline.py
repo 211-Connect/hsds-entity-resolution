@@ -11,6 +11,7 @@ import polars as pl
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.admission import (
     InformativeKeyTable,
+    KeyCorroboration,
     KeyValueFilter,
     StructuralExclusion,
 )
@@ -93,6 +94,7 @@ def run_incremental(
     informative_keys: InformativeKeyTable | None = None,
     structural_exclusion: StructuralExclusion | None = None,
     key_value_filter: KeyValueFilter | None = None,
+    key_corroboration: KeyCorroboration | None = None,
 ) -> IncrementalRunResult:
     """Run all incremental stages and return typed artifacts for downstream consumers.
 
@@ -102,7 +104,8 @@ def run_incremental(
     Source Profile text the judge reads for records from it; schemas without an entry
     get an empty slot. Without a judge, outputs are exactly as before.
 
-    ``informative_keys``, ``structural_exclusion`` and ``key_value_filter`` drive candidate
+    ``informative_keys``, ``structural_exclusion``, ``key_value_filter`` and
+    ``key_corroboration`` drive candidate
     admission (see :mod:`hsds_entity_resolution.core.admission`); without them every key
     field is informative, every key value counts and nothing is excluded. Excluded pairs are
     returned as ``excluded_pairs``.
@@ -153,6 +156,7 @@ def run_incremental(
         informative_keys=informative_keys,
         structural_exclusion=structural_exclusion,
         key_value_filter=key_value_filter,
+        key_corroboration=key_corroboration,
     )
     logger.stage_completed(
         stage="generate_candidates",
@@ -351,6 +355,7 @@ def run_incremental_until_candidates(
     informative_keys: InformativeKeyTable | None = None,
     structural_exclusion: StructuralExclusion | None = None,
     key_value_filter: KeyValueFilter | None = None,
+    key_corroboration: KeyCorroboration | None = None,
 ) -> CandidatesCheckpointResult:
     """Run pipeline through candidate generation only.
 
@@ -405,6 +410,7 @@ def run_incremental_until_candidates(
         informative_keys=informative_keys,
         structural_exclusion=structural_exclusion,
         key_value_filter=key_value_filter,
+        key_corroboration=key_corroboration,
     )
     logger.stage_completed(
         stage="generate_candidates",

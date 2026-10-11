@@ -30,6 +30,7 @@ from hsds_entity_resolution.core.admission import (
     INFORMATIVE_KEY_RULE_PREFIX,
     KEY_FIELDS,
     InformativeKeyTable,
+    KeyCorroboration,
     KeyField,
     KeyValueFilter,
     StructuralExclusion,
@@ -53,6 +54,7 @@ class AdmissionInputs:
     informative_keys: InformativeKeyTable | None
     structural_exclusion: StructuralExclusion | None
     key_value_filter: KeyValueFilter | None = None
+    key_corroboration: KeyCorroboration | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,7 @@ class BlockingOverview:
     above_threshold_examined: int
     excluded: int
     key_admitted: int
+    key_uncorroborated: int
     pairs_kept: int
     truncated_above_threshold: int
     last_retained_similarity_sum: float
@@ -80,6 +83,7 @@ class BlockingState:
 
     pairs_by_key: dict[str, dict[str, Any]] = field(default_factory=dict)
     excluded_by_key: dict[str, dict[str, Any]] = field(default_factory=dict)
+    key_uncorroborated: int = 0
     above_threshold: int = 0
     key_hits: dict[str, int] = field(default_factory=lambda: {key: 0 for key in KEY_FIELDS})
     anchors_with_above_threshold: int = 0
@@ -123,6 +127,7 @@ def generate_candidates(
     informative_keys: InformativeKeyTable | None = None,
     structural_exclusion: StructuralExclusion | None = None,
     key_value_filter: KeyValueFilter | None = None,
+    key_corroboration: KeyCorroboration | None = None,
 ) -> GenerateCandidatesResult:
     """Generate candidate pairs by embedding floor and Informative Keys.
 
@@ -145,6 +150,8 @@ def generate_candidates(
         structural_exclusion: Optional veto ``(entity_a, entity_b) -> reason | None``.
         key_value_filter: Optional ``(entity, field, values) -> values`` that removes key
             values which never identify a record in that source.
+        key_corroboration: Optional ``(entity_a, entity_b, field) -> admits`` deciding
+            whether a shared key field admits a pair; never affects the embedding floor.
 
     Returns:
         Candidate pairs, a one-row summary, and the excluded pairs with reasons.
@@ -157,6 +164,7 @@ def generate_candidates(
         informative_keys=informative_keys,
         structural_exclusion=structural_exclusion,
         key_value_filter=key_value_filter,
+        key_corroboration=key_corroboration,
     )
     outputs = [
         _generate_for_entity_type(
@@ -604,8 +612,11 @@ def _admit_key_candidates(
 ) -> tuple[int, bool]:
     """Admit one anchor's key-sharing candidates; return (admitted, hit the per-anchor cap)."""
     anchor = matrix.rows[anchor_idx]
+    corroborated = _corroborated_keys(
+        matrix=matrix, anchor=anchor, shared=shared, admission=admission, state=state
+    )
     admitted = 0
-    for considered, (candidate_id, keys) in enumerate(sorted(shared.items())):
+    for considered, (candidate_id, keys) in enumerate(sorted(corroborated.items())):
         if max_pairs_per_anchor is not None and considered >= max_pairs_per_anchor:
             return admitted, True
         candidate_idx = matrix.id_to_idx[candidate_id]
@@ -622,6 +633,39 @@ def _admit_key_candidates(
         if _admit(record=record, entities=(anchor, candidate), admission=admission, state=state):
             admitted += 1
     return admitted, False
+
+
+def _corroborated_keys(
+    *,
+    matrix: EntityMatrix,
+    anchor: dict[str, Any],
+    shared: dict[str, set[KeyField]],
+    admission: AdmissionInputs,
+    state: BlockingState,
+) -> dict[str, set[KeyField]]:
+    """Keep the shared fields the caller's corroboration accepts; drop pairs left with none.
+
+    The callable sees the pair in canonical (entity_a, entity_b) order, so its answer does
+    not depend on which record was the anchor.
+    """
+    if admission.key_corroboration is None:
+        return shared
+    kept: dict[str, set[KeyField]] = {}
+    for candidate_id, keys in shared.items():
+        candidate = matrix.rows[matrix.id_to_idx[candidate_id]]
+        entity_a_id, _ = _canonical_pair(anchor["entity_id"], candidate["entity_id"])
+        if anchor["entity_id"] == entity_a_id:
+            entity_a, entity_b = anchor, candidate
+        else:
+            entity_a, entity_b = candidate, anchor
+        accepted: set[KeyField] = {
+            key for key in keys if admission.key_corroboration(entity_a, entity_b, key)
+        }
+        if accepted:
+            kept[candidate_id] = accepted
+        else:
+            state.key_uncorroborated += 1
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +827,7 @@ def _overview_from_state(
         above_threshold_examined=state.above_threshold,
         excluded=len(state.excluded_by_key),
         key_admitted=key_admitted,
+        key_uncorroborated=state.key_uncorroborated,
         pairs_kept=len(state.pairs_by_key),
         truncated_above_threshold=state.truncated_above_threshold,
         last_retained_similarity_sum=state.last_retained_similarity_sum,
@@ -877,12 +922,13 @@ def _log_blocking_summary(
         rule_counts[record["blocking_rule_id"]] = rule_counts.get(record["blocking_rule_id"], 0) + 1
     logging.getLogger(__name__).debug(
         "🧮 blocking_summary entity_type=%s floor=%s above_floor=%d excluded=%d"
-        " key_admitted=%d pairs_kept=%d key_hits=%s rule_counts=%s",
+        " key_admitted=%d key_uncorroborated=%d pairs_kept=%d key_hits=%s rule_counts=%s",
         overview.entity_type,
         threshold,
         overview.above_threshold_examined,
         overview.excluded,
         overview.key_admitted,
+        overview.key_uncorroborated,
         overview.pairs_kept,
         state.key_hits,
         dict(sorted(rule_counts.items())),

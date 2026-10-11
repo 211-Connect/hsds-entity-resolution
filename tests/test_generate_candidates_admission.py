@@ -19,6 +19,7 @@ from hsds_entity_resolution.core.generate_candidates import generate_candidates
 from hsds_entity_resolution.core.generate_candidates_sharded import (
     merge_generate_candidates_results,
 )
+from hsds_entity_resolution.core.pipeline import run_incremental_until_candidates
 from hsds_entity_resolution.core.score_candidates import score_candidates
 
 # Cosine of [1, 0] and [0.6, 0.8] is 0.6: below the 0.75 default floor.
@@ -86,16 +87,19 @@ def _generate(
     *,
     informative_keys: Mapping[str, Mapping[Any, bool]] | None = None,
     structural_exclusion: Any = None,
+    key_corroboration: Any = None,
     config: EntityResolutionRunConfig | None = None,
+    anchor: str = "svc-a",
 ) -> Any:
     return generate_candidates(
         denormalized_organization=_empty_frame(),
         denormalized_service=services,
-        changed_entities=_changed("svc-a"),
+        changed_entities=_changed(anchor),
         config=config or _config(),
         explicit_backfill=False,
         informative_keys=informative_keys,
         structural_exclusion=structural_exclusion,
+        key_corroboration=key_corroboration,
     )
 
 
@@ -273,6 +277,80 @@ def test_embedding_and_key_admission_merge_and_the_key_names_the_rule() -> None:
         "informative_key_email",
         "informative_key_phone",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Key corroboration
+# ---------------------------------------------------------------------------
+
+
+def _reject_names(_a: Mapping[str, Any], _b: Mapping[str, Any], field: str) -> bool:
+    return field != "name"
+
+
+def test_a_shared_key_the_corroboration_rejects_does_not_admit() -> None:
+    services = _services(embeddings=_LOW_SIMILARITY, names=("Food Pantry", "Food Pantry"))
+
+    result = _generate(services, key_corroboration=_reject_names)
+
+    assert result.candidate_pairs.is_empty()
+    assert _generate(services).candidate_pairs.height == 1
+
+
+def test_another_shared_key_still_admits_and_names_only_itself() -> None:
+    services = _services(
+        embeddings=_LOW_SIMILARITY,
+        names=("Food Pantry", "Food Pantry"),
+        phones=(["5550100199"], ["5550100199"]),
+    )
+
+    pair = _only_pair(_generate(services, key_corroboration=_reject_names))
+
+    assert pair["blocking_rule_id"] == "informative_key:phone"
+    assert pair["candidate_reason_codes"] == ["informative_key_phone"]
+
+
+def test_corroboration_never_affects_the_embedding_floor() -> None:
+    services = _services(embeddings=_HIGH_SIMILARITY, names=("Food Pantry", "Food Pantry"))
+
+    pair = _only_pair(_generate(services, key_corroboration=_reject_names))
+
+    assert pair["blocking_rule_id"] == "embedding_floor"
+    assert pair["candidate_reason_codes"] == ["embedding_floor"]
+
+
+@pytest.mark.parametrize("anchor", ["svc-a", "svc-b"])
+def test_corroboration_sees_the_canonical_pair_whichever_record_is_the_anchor(
+    anchor: str,
+) -> None:
+    seen: list[tuple[str, str, str]] = []
+
+    def record(a: Mapping[str, Any], b: Mapping[str, Any], field: str) -> bool:
+        seen.append((str(a["entity_id"]), str(b["entity_id"]), field))
+        return True
+
+    services = _services(embeddings=_LOW_SIMILARITY, names=("Food Pantry", "Food Pantry"))
+    _generate(services, key_corroboration=record, anchor=anchor)
+
+    assert seen == [("svc-a", "svc-b", "name")]
+
+
+def test_the_pipeline_passes_the_corroboration_to_admission() -> None:
+    services = _services(embeddings=_LOW_SIMILARITY, names=("Food Pantry", "Food Pantry"))
+
+    def candidates(key_corroboration: Any) -> pl.DataFrame:
+        return run_incremental_until_candidates(
+            organization_entities=pl.DataFrame(),
+            service_entities=services,
+            previous_entity_index=pl.DataFrame(),
+            previous_pair_state_index=pl.DataFrame(),
+            config=_config(),
+            explicit_backfill=True,
+            key_corroboration=key_corroboration,
+        ).candidates.candidate_pairs
+
+    assert candidates(None).height == 1
+    assert candidates(_reject_names).is_empty()
 
 
 def test_build_informative_key_table_uses_cutoff_and_overrides() -> None:
