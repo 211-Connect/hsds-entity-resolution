@@ -4,6 +4,10 @@ The answers are the fixed questions of ADR-0027 as probabilities: Same Site, Sam
 Offering, physical delivery, and the Organization Relation as a distribution over
 five labels. The judge never answers "duplicate"; the caller composes that in code
 from these answers and its own policy.
+
+Any answer may be ``None``: the question was not asked. A judge that asks the
+questions one at a time can stop once the answers so far decide the caller's policy
+(2.3.0); what it did not ask stays unknown rather than being guessed.
 """
 
 from __future__ import annotations
@@ -33,53 +37,61 @@ _PROBABILITY_TOLERANCE = 1e-6
 class PairAnswers:
     """One judge's answers for one pair.
 
-    ``same_offering`` and ``physically_delivered`` are ``None`` for organization
-    pairs, which are not asked them.
+    ``None`` means the question was not asked. Organization pairs are never asked
+    ``same_offering`` or ``physically_delivered``; at least one question is answered.
     """
 
     pair_key: str
     entity_type: str
     model_id: str
     question_set_version: str
-    same_site: float
+    same_site: float | None
     same_offering: float | None
     physically_delivered: float | None
-    organization_relation: Mapping[OrganizationRelation, float]
+    organization_relation: Mapping[OrganizationRelation, float] | None
 
     def __post_init__(self) -> None:
         """Validate probability ranges, relation labels and per-entity-type fields."""
-        for name in ("same_site", "same_offering", "physically_delivered"):
-            value = getattr(self, name)
+        probabilities = (self.same_site, self.same_offering, self.physically_delivered)
+        for name, value in zip(
+            ("same_site", "same_offering", "physically_delivered"), probabilities, strict=True
+        ):
             if value is not None and not 0.0 <= value <= 1.0:
                 message = f"{name} must be a probability in [0, 1], got {value!r}"
                 raise ValueError(message)
-        if set(self.organization_relation) != set(ORGANIZATION_RELATIONS):
-            message = (
-                "organization_relation must give a probability for exactly "
-                f"{list(ORGANIZATION_RELATIONS)}, got {sorted(self.organization_relation)}"
-            )
-            raise ValueError(message)
-        total = sum(self.organization_relation.values())
-        if abs(total - 1.0) > _PROBABILITY_TOLERANCE:
-            message = f"organization_relation probabilities must sum to 1, got {total!r}"
-            raise ValueError(message)
-        is_organization = self.entity_type == "organization"
+        if self.organization_relation is not None:
+            _validate_relation(self.organization_relation)
         has_service_answers = (
             self.same_offering is not None or self.physically_delivered is not None
         )
-        if is_organization and has_service_answers:
+        if self.entity_type == "organization" and has_service_answers:
             message = "organization pairs carry no same_offering or physically_delivered answer"
             raise ValueError(message)
-        if not is_organization and (
-            self.same_offering is None or self.physically_delivered is None
-        ):
-            message = "service pairs need same_offering and physically_delivered answers"
+        if self.organization_relation is None and all(value is None for value in probabilities):
+            message = "a judgment must answer at least one question"
             raise ValueError(message)
 
     @property
-    def organization_relation_choice(self) -> OrganizationRelation:
-        """Return the most probable relation; ties resolve in label order."""
-        return max(ORGANIZATION_RELATIONS, key=lambda label: self.organization_relation[label])
+    def organization_relation_choice(self) -> OrganizationRelation | None:
+        """Return the most probable relation (ties in label order); ``None`` if not asked."""
+        relation = self.organization_relation
+        if relation is None:
+            return None
+        return max(ORGANIZATION_RELATIONS, key=lambda label: relation[label])
+
+
+def _validate_relation(relation: Mapping[OrganizationRelation, float]) -> None:
+    """Require a probability for exactly the five relation labels, summing to one."""
+    if set(relation) != set(ORGANIZATION_RELATIONS):
+        message = (
+            "organization_relation must give a probability for exactly "
+            f"{list(ORGANIZATION_RELATIONS)}, got {sorted(relation)}"
+        )
+        raise ValueError(message)
+    total = sum(relation.values())
+    if abs(total - 1.0) > _PROBABILITY_TOLERANCE:
+        message = f"organization_relation probabilities must sum to 1, got {total!r}"
+        raise ValueError(message)
 
 
 def answers_to_frame(answers: Iterable[PairAnswers]) -> pl.DataFrame:
@@ -101,13 +113,19 @@ def answers_to_frame(answers: Iterable[PairAnswers]) -> pl.DataFrame:
             "same_offering": answer.same_offering,
             "physically_delivered": answer.physically_delivered,
             "organization_relation": answer.organization_relation_choice,
-            "organization_relation_probabilities": {
-                label: answer.organization_relation[label] for label in ORGANIZATION_RELATIONS
-            },
+            "organization_relation_probabilities": _relation_struct(answer),
         }
         for answer in answers
     ]
     return pl.DataFrame(rows, schema=JUDGE_ANSWERS_SCHEMA)
+
+
+def _relation_struct(answer: PairAnswers) -> dict[str, float] | None:
+    """Return the relation distribution as a struct value, or ``None`` if not asked."""
+    relation = answer.organization_relation
+    if relation is None:
+        return None
+    return {label: relation[label] for label in ORGANIZATION_RELATIONS}
 
 
 def answers_from_frame(frame: pl.DataFrame) -> list[PairAnswers]:
@@ -133,5 +151,9 @@ def _answer_from_row(row: Mapping[str, Any]) -> PairAnswers:
         same_site=row["same_site"],
         same_offering=row["same_offering"],
         physically_delivered=row["physically_delivered"],
-        organization_relation={label: probabilities[label] for label in ORGANIZATION_RELATIONS},
+        organization_relation=(
+            None
+            if probabilities is None
+            else {label: probabilities[label] for label in ORGANIZATION_RELATIONS}
+        ),
     )

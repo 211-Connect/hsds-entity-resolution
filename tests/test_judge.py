@@ -268,6 +268,26 @@ def test_answers_round_trip_through_the_artifact_schema(tmp_path: Path) -> None:
     assert answers_from_frame(restored) == answers
 
 
+def test_unasked_answers_stay_null_through_the_artifact_schema(tmp_path: Path) -> None:
+    """A judge that stopped early leaves its unasked answers null, not guessed (2.3.0)."""
+    stopped_after_offering = _answer(
+        "service",
+        same_site=None,
+        physically_delivered=None,
+        organization_relation=None,
+        same_offering=0.02,
+    )
+    stopped_after_relation = _answer("organization", pair_key="c__d", same_site=None)
+    answers = [stopped_after_offering, stopped_after_relation]
+    assert stopped_after_offering.organization_relation_choice is None
+    frame = answers_to_frame(answers)
+    assert frame.row(0, named=True)["organization_relation"] is None
+    assert frame.row(0, named=True)["organization_relation_probabilities"] is None
+    path = tmp_path / "judge_answers.parquet"
+    frame.write_parquet(path)
+    assert answers_from_frame(pl.read_parquet(path)) == answers
+
+
 @pytest.mark.parametrize(
     ("entity_type", "overrides", "message"),
     [
@@ -279,7 +299,16 @@ def test_answers_round_trip_through_the_artifact_schema(tmp_path: Path) -> None:
             "sum to 1",
         ),
         ("organization", {"same_offering": 0.5}, "organization pairs carry no"),
-        ("service", {"physically_delivered": None}, "service pairs need"),
+        (
+            "service",
+            {
+                "same_site": None,
+                "same_offering": None,
+                "physically_delivered": None,
+                "organization_relation": None,
+            },
+            "at least one question",
+        ),
     ],
 )
 def test_answers_reject_invalid_values(

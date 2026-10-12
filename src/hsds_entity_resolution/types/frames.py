@@ -133,8 +133,9 @@ PAIR_REASONS_SCHEMA: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 # One row per judged pair. Organization pairs leave same_offering and
-# physically_delivered null. organization_relation is the most probable label;
-# the full distribution is kept beside it.
+# physically_delivered null; any answer is null when the judge did not ask it.
+# organization_relation is the most probable label; the full distribution is kept
+# beside it.
 JUDGE_ANSWERS_SCHEMA: dict[str, Any] = {
     "pair_key": pl.String,
     "entity_type": pl.String,
