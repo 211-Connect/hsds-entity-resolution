@@ -234,7 +234,9 @@ The engine fixes what a judge reads and what it answers; it ships no questions o
   pairs), and `organization_relation` as a distribution over `same`,
   `parent_and_chapter`, `affiliated`, `unrelated`, `cannot_tell`, plus `model_id` and
   `question_set_version`. The judge never answers "duplicate"; compose that in your
-  own code.
+  own code. Any answer may be null when the judge did not ask that question (a judge
+  that asks one question at a time and stops once your policy is decided); at least
+  one is answered.
 - `hsds_entity_resolution.judge.PairJudge`: a protocol with `judge(states) -> answers`
   and a `state_token_budget`. Size states for the smallest model you may switch to
   (`SMALLEST_MODEL_STATE_BUDGET_TOKENS`, 32k).
@@ -309,6 +311,11 @@ migration message.
   `taxonomy_embeddings`.
 - **Judge stage (2.0.0).** `run_incremental` accepts `judge` and `source_profiles`;
   without a judge every output is unchanged.
+- **Unasked answers (2.3.0).** Every `PairAnswers` answer, `same_site` and
+  `organization_relation` included, may be `None`, and `organization_relation_choice`
+  returns `None` when the relation was not asked. Service pairs no longer require
+  `same_offering` and `physically_delivered`. Code that reads the answers must handle
+  `None`.
 - **Logging.** Core modules log through `logging.getLogger("hsds_entity_resolution...")`
   instead of Dagster's logger. Add `hsds_entity_resolution` to your Dagster
   `python_logs.managed_python_loggers` to see them in the Dagster UI.
