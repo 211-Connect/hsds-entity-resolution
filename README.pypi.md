@@ -198,6 +198,7 @@ Key thresholds:
 | `scoring.nlp.fuzzy_threshold` | `0.88` | `0.86` | Minimum name similarity to count as NLP match |
 | `blocking.similarity_threshold` | `0.75` | `0.75` | The embedding floor: a pair at or above it is a candidate on similarity alone |
 | `blocking.max_candidates_per_entity` | `50` | `125` | Maximum embedding-floor candidates per anchor (shared-key candidates are not capped by it) |
+| `blocking.exemption_floor` | unset | unset | Lower edge of the band below the floor where a `floor_exemption` reason admits a pair (2.5.0) |
 
 ---
 
@@ -287,6 +288,14 @@ One generic rule decides which pairs are scored (2.1.0):
   repeated across hundreds of rows (a category label used as a name) is not.
 - **Embedding floor.** Records at or above `blocking.similarity_threshold` are a
   candidate, up to `blocking.max_candidates_per_entity` per anchor.
+- **Floor exemption (2.5.0).** With `blocking.exemption_floor` set (at most
+  `blocking.similarity_threshold`) and a caller `floor_exemption(entity_a, entity_b) ->
+  reason | None`, a pair whose similarity is in `[exemption_floor, similarity_threshold)`
+  is a candidate when the callable names a reason (for example two services of one
+  organization). It carries the reason code `floor_exempt:<reason>` and blocking rule
+  `floor_exempt`, is still subject to the Structural Exclusion, and counts against
+  `max_candidates_per_entity` after every pair at or above the floor. Pairs only the
+  exemption admitted are counted by reason in `floor_exempt_counts`.
 - **Structural Exclusions.** A caller-supplied callable can veto any pair. Excluded
   pairs are returned as `excluded_pairs` with the reason, never dropped silently.
 
@@ -344,6 +353,13 @@ migration message.
   columns behind them are optional, so existing callers keep working. A state's
   serialised form gains the new keys, so anything that fingerprints the state changes
   once for every record.
+- **Floor exemption (2.5.0).** `run_incremental`, `run_incremental_until_candidates`
+  and `generate_candidates` accept `floor_exemption`, and `BlockingConfig` gains
+  `exemption_floor`. Both default to off; without both, admission is byte-identical to
+  2.4.0. `GenerateCandidatesResult` and `IncrementalRunResult` gain
+  `floor_exempt_counts` (reason → pairs only the exemption admitted), empty by default.
+  `BlockingConfig.model_dump()` gains the `exemption_floor` key (`None`), so anything
+  that fingerprints a dumped config changes once.
 - **Logging.** Core modules log through `logging.getLogger("hsds_entity_resolution...")`
   instead of Dagster's logger. Add `hsds_entity_resolution` to your Dagster
   `python_logs.managed_python_loggers` to see them in the Dagster UI.

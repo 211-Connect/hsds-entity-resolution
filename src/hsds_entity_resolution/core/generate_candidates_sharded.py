@@ -21,6 +21,7 @@ import logging
 
 import polars as pl
 
+from hsds_entity_resolution.core.generate_candidates import floor_exempt_counts
 from hsds_entity_resolution.types.contracts import (
     CleanEntitiesResult,
     GenerateCandidatesResult,
@@ -134,7 +135,10 @@ def merge_generate_candidates_results(
         }
     )
     return GenerateCandidatesResult(
-        candidate_pairs=deduped, candidate_summary=summary, excluded_pairs=excluded
+        candidate_pairs=deduped,
+        candidate_summary=summary,
+        excluded_pairs=excluded,
+        floor_exempt_counts=floor_exempt_counts(deduped),
     )
 
 

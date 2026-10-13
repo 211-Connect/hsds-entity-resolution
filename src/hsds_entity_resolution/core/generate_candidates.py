@@ -5,6 +5,11 @@ Admission follows one generic rule (see :mod:`hsds_entity_resolution.core.admiss
 * **Embedding floor** — for each changed anchor, the most similar records are walked in
   descending cosine order down to ``blocking.similarity_threshold`` and admitted, up to
   ``blocking.max_candidates_per_entity`` per anchor.
+* **Floor exemption** — with ``blocking.exemption_floor`` set and a caller Floor
+  Exemption, the same walk continues below the floor down to ``exemption_floor``; a pair
+  in that band is admitted only when the exemption names a reason
+  (``floor_exempt:<reason>``). Exempt pairs count against the per-anchor cap and, the
+  walk being descending, come after every pair at or above the floor.
 * **Informative Keys** — every record that shares a value of an informative key field
   with an anchor is admitted regardless of similarity (inverted indexes, bounded by the
   optional ``chunking`` fanout caps).
@@ -17,6 +22,7 @@ its pair rule from the entity type and the two source schemas alone.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,14 +33,18 @@ from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.admission import (
     EMBEDDING_FLOOR_REASON_CODE,
     EMBEDDING_FLOOR_RULE_ID,
+    FLOOR_EXEMPT_REASON_PREFIX,
+    FLOOR_EXEMPT_RULE_ID,
     INFORMATIVE_KEY_RULE_PREFIX,
     KEY_FIELDS,
+    FloorExemption,
     InformativeKeyTable,
     KeyCorroboration,
     KeyField,
     KeyValueFilter,
     StructuralExclusion,
     filtered_key_values,
+    floor_exempt_reason_code,
     informative_key_reason_code,
     informative_key_rule_id,
     is_informative,
@@ -55,6 +65,7 @@ class AdmissionInputs:
     structural_exclusion: StructuralExclusion | None
     key_value_filter: KeyValueFilter | None = None
     key_corroboration: KeyCorroboration | None = None
+    floor_exemption: FloorExemption | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +86,8 @@ class BlockingOverview:
     truncated_above_threshold: int
     last_retained_similarity_sum: float
     last_retained_similarity_count: int
+    floor_exempt_examined: int = 0
+    floor_exempt_by_reason: Mapping[str, int] = field(default_factory=dict[str, int])
 
 
 @dataclass
@@ -93,6 +106,7 @@ class BlockingState:
     truncated_above_threshold: int = 0
     last_retained_similarity_sum: float = 0.0
     last_retained_similarity_count: int = 0
+    floor_exempt_examined: int = 0
 
 
 @dataclass(frozen=True)
@@ -128,6 +142,7 @@ def generate_candidates(
     structural_exclusion: StructuralExclusion | None = None,
     key_value_filter: KeyValueFilter | None = None,
     key_corroboration: KeyCorroboration | None = None,
+    floor_exemption: FloorExemption | None = None,
 ) -> GenerateCandidatesResult:
     """Generate candidate pairs by embedding floor and Informative Keys.
 
@@ -152,9 +167,13 @@ def generate_candidates(
             values which never identify a record in that source.
         key_corroboration: Optional ``(entity_a, entity_b, field) -> admits`` deciding
             whether a shared key field admits a pair; never affects the embedding floor.
+        floor_exemption: Optional ``(entity_a, entity_b) -> reason | None`` admitting a
+            pair in ``[blocking.exemption_floor, blocking.similarity_threshold)``; ignored
+            unless ``blocking.exemption_floor`` is set.
 
     Returns:
-        Candidate pairs, a one-row summary, and the excluded pairs with reasons.
+        Candidate pairs, a one-row summary, the excluded pairs with reasons, and the
+        count of pairs only the floor exemption admitted, by reason.
     """
     full_scope_rescore = explicit_backfill or force_rescore
     delta_entities = changed_entities.filter(pl.col("delta_class").is_in(["added", "changed"]))
@@ -165,6 +184,7 @@ def generate_candidates(
         structural_exclusion=structural_exclusion,
         key_value_filter=key_value_filter,
         key_corroboration=key_corroboration,
+        floor_exemption=floor_exemption,
     )
     outputs = [
         _generate_for_entity_type(
@@ -199,7 +219,40 @@ def generate_candidates(
         candidate_pairs=candidate_pairs,
         candidate_summary=summary,
         excluded_pairs=excluded_pairs,
+        floor_exempt_counts=floor_exempt_counts(candidate_pairs),
     )
+
+
+def floor_exempt_counts(candidate_pairs: pl.DataFrame) -> dict[str, int]:
+    """Count the candidate pairs only the floor exemption admitted, by its reason.
+
+    A pair admitted by the exemption and also by a shared Informative Key is not counted:
+    the key would have admitted it without the exemption.
+
+    Args:
+        candidate_pairs: Candidate pairs (``CANDIDATE_PAIR_SCHEMA``), one row per pair.
+
+    Returns:
+        Reason (without the ``floor_exempt:`` prefix) → pair count; empty when none.
+    """
+    if candidate_pairs.is_empty() or "blocking_rule_id" not in candidate_pairs.columns:
+        return {}
+    return _exempt_counts(
+        candidate_pairs.select("blocking_rule_id", "candidate_reason_codes").to_dicts()
+    )
+
+
+def _exempt_counts(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Count records whose only admission was the floor exemption, by reason."""
+    counts: dict[str, int] = {}
+    for record in records:
+        if record["blocking_rule_id"] != FLOOR_EXEMPT_RULE_ID:
+            continue
+        for code in record["candidate_reason_codes"] or []:
+            if str(code).startswith(FLOOR_EXEMPT_REASON_PREFIX):
+                reason = str(code).removeprefix(FLOOR_EXEMPT_REASON_PREFIX)
+                counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _generate_for_entity_type(
@@ -408,6 +461,7 @@ def _expand_anchor(
         similarities=similarities,
         top_indices=top_indices,
         threshold=_floor(config),
+        walk_floor=_walk_floor(config=config, admission=admission),
         max_per_entity=config.blocking.max_candidates_per_entity,
         admission=admission,
         state=state,
@@ -431,11 +485,16 @@ def _collect_anchor_candidates(
     similarities: np.ndarray,
     top_indices: list[int],
     threshold: float,
+    walk_floor: float,
     max_per_entity: int,
     admission: AdmissionInputs,
     state: BlockingState,
 ) -> AnchorProcessingResult:
-    """Walk one anchor's candidates in descending similarity down to the floor."""
+    """Walk one anchor's candidates in descending similarity down to ``walk_floor``.
+
+    Pairs at or above ``threshold`` are admitted on similarity; pairs in
+    ``[walk_floor, threshold)`` only when the Floor Exemption names a reason.
+    """
     anchor = matrix.rows[anchor_idx]
     selected = 0
     saw_above_threshold = False
@@ -444,29 +503,29 @@ def _collect_anchor_candidates(
         if candidate_idx == anchor_idx:
             continue
         similarity = float(similarities[candidate_idx])
-        if similarity < threshold:
+        if similarity < walk_floor:
             break
-        saw_above_threshold = True
-        state.above_threshold += 1
-        record = _to_candidate_record(
+        if similarity >= threshold:
+            saw_above_threshold = True
+            state.above_threshold += 1
+        candidate = matrix.rows[candidate_idx]
+        record = _walk_record(
             anchor=anchor,
-            candidate=matrix.rows[candidate_idx],
+            candidate=candidate,
             similarity=similarity,
-            reason_codes=[EMBEDDING_FLOOR_REASON_CODE],
-            blocking_rule_id=EMBEDDING_FLOOR_RULE_ID,
-        )
-        if not _admit(
-            record=record,
-            entities=(anchor, matrix.rows[candidate_idx]),
+            above_floor=similarity >= threshold,
             admission=admission,
             state=state,
+        )
+        if record is None or not _admit(
+            record=record, entities=(anchor, candidate), admission=admission, state=state
         ):
             continue
         selected += 1
         last_retained_similarity = similarity
         if selected >= max_per_entity:
             return AnchorProcessingResult(
-                saw_above_threshold=True,
+                saw_above_threshold=saw_above_threshold,
                 selected=selected,
                 last_retained_similarity=last_retained_similarity,
                 truncated_above_threshold=_count_truncated_above_threshold(
@@ -483,6 +542,55 @@ def _collect_anchor_candidates(
         last_retained_similarity=last_retained_similarity,
         truncated_above_threshold=0,
     )
+
+
+def _walk_floor(*, config: EntityResolutionRunConfig, admission: AdmissionInputs) -> float:
+    """Return how far down the descending walk goes: the floor, or the exemption floor.
+
+    The walk only goes below the floor when both ``blocking.exemption_floor`` and a Floor
+    Exemption are given; otherwise it stops at the floor exactly as before.
+    """
+    floor = _floor(config)
+    exemption_floor = config.blocking.exemption_floor
+    if exemption_floor is None or admission.floor_exemption is None:
+        return floor
+    return min(floor, exemption_floor)
+
+
+def _walk_record(
+    *,
+    anchor: dict[str, Any],
+    candidate: dict[str, Any],
+    similarity: float,
+    above_floor: bool,
+    admission: AdmissionInputs,
+    state: BlockingState,
+) -> dict[str, Any] | None:
+    """Build the walk's candidate record, or ``None`` for a band pair with no exemption."""
+    if above_floor:
+        return _to_candidate_record(
+            anchor=anchor,
+            candidate=candidate,
+            similarity=similarity,
+            reason_codes=[EMBEDDING_FLOOR_REASON_CODE],
+            blocking_rule_id=EMBEDDING_FLOOR_RULE_ID,
+        )
+    exemption = admission.floor_exemption
+    if exemption is None:
+        return None
+    state.floor_exempt_examined += 1
+    record = _to_candidate_record(
+        anchor=anchor,
+        candidate=candidate,
+        similarity=similarity,
+        reason_codes=[],
+        blocking_rule_id=FLOOR_EXEMPT_RULE_ID,
+    )
+    reason = exemption(*_canonical_entities(record, (anchor, candidate)))
+    if not reason:
+        return None
+    record["candidate_reason_codes"] = [floor_exempt_reason_code(reason)]
+    return record
 
 
 def _count_truncated_above_threshold(
@@ -832,6 +940,8 @@ def _overview_from_state(
         truncated_above_threshold=state.truncated_above_threshold,
         last_retained_similarity_sum=state.last_retained_similarity_sum,
         last_retained_similarity_count=state.last_retained_similarity_count,
+        floor_exempt_examined=state.floor_exempt_examined,
+        floor_exempt_by_reason=_exempt_counts(state.pairs_by_key.values()),
     )
 
 
@@ -953,6 +1063,7 @@ def _log_generate_candidates_overview(
         " candidate_pairs=%d active_anchors=%d anchors_with_no_above_floor=%d (%.1f%%)"
         " anchors_at_cap=%d (%.1f%%) above_floor_truncated=%d"
         " avg_last_retained_similarity=%.4f (n=%d) key_admitted=%d excluded=%d"
+        " exemption_floor=%s floor_exempt=%s"
         " chunking=[generate_anchor_chunk_size=%s max_contact_overlap_pairs_per_anchor=%s"
         " max_contact_index_fanout=%s] per_type=[%s]",
         _floor(config),
@@ -968,6 +1079,12 @@ def _log_generate_candidates_overview(
         last_count,
         sum(overview.key_admitted for overview in overviews),
         sum(overview.excluded for overview in overviews),
+        config.blocking.exemption_floor,
+        {
+            o.entity_type: dict(o.floor_exempt_by_reason)
+            for o in overviews
+            if o.floor_exempt_examined
+        },
         config.chunking.generate_anchor_chunk_size,
         config.chunking.max_contact_overlap_pairs_per_anchor,
         config.chunking.max_contact_index_fanout,
