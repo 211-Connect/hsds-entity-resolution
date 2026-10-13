@@ -69,7 +69,14 @@ _SERVICE_PAYLOAD_COLUMNS = [
 # or inferred from the data.  pl.Object bypasses that path entirely and the
 # values are returned as-is by to_dicts(), which is what downstream stages
 # (generate_candidates, score_candidates) rely on.
-_NESTED_LIST_COLUMNS = {"locations", "taxonomies", "identifiers", "services_rollup"}
+_NESTED_LIST_COLUMNS = {
+    "locations",
+    "taxonomies",
+    "identifiers",
+    "services_rollup",
+    "service_areas",
+    "schedules",
+}
 
 
 def clean_entities(
@@ -238,6 +245,10 @@ def _clean_entity_row(*, row: RawEntityRowInput, entity_type: EntityType) -> Cle
         "assurer_email": _passthrough_optional(row.get("assurer_email")),
         "original_id": _passthrough_optional(row.get("original_id")),
         "organization_original_id": _passthrough_optional(row.get("organization_original_id")),
+        # Judge-only evidence (2.4.0): passed through, not hashed, not scored.
+        "parent_organization_id": _passthrough_optional(row.get("parent_organization_id")),
+        "service_areas": _clean_object_list(row.get("service_areas")),
+        "schedules": _clean_object_list(row.get("schedules")),
     }
 
 
