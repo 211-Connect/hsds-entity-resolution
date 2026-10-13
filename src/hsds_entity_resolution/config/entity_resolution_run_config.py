@@ -88,9 +88,15 @@ class BlockingConfig(BaseStrictModel):
     candidate on similarity alone. ``max_candidates_per_entity`` caps how many such
     pairs one anchor keeps; pairs admitted by a shared Informative Key are not capped by
     it (see ``ChunkingConfig`` for the optional key caps).
+
+    ``exemption_floor`` (optional, at most ``similarity_threshold``) opens a band below
+    the floor: a pair with similarity in ``[exemption_floor, similarity_threshold)`` is
+    admitted only when the caller's Floor Exemption names a reason for it. Unset, or
+    without a Floor Exemption, nothing below the floor is admitted by similarity.
     """
 
     similarity_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    exemption_floor: float | None = Field(default=None, ge=0.0, le=1.0)
     max_candidates_per_entity: int = Field(default=50, ge=1, le=500)
     blocking_batch_size: int = Field(default=5000, ge=1, le=50000)
 
@@ -99,6 +105,17 @@ class BlockingConfig(BaseStrictModel):
     def reject_replaced_admission_keys(cls, data: Any) -> Any:
         """Fail with a migration message when the removed overlap prefilter is passed."""
         return _reject_replaced_admission_keys(data, removed=("overlap_prefilter_channels",))
+
+    @model_validator(mode="after")
+    def exemption_floor_is_below_the_floor(self) -> BlockingConfig:
+        """Reject an exemption floor above the embedding floor (an empty band is allowed)."""
+        if self.exemption_floor is not None and self.exemption_floor > self.similarity_threshold:
+            message = (
+                f"blocking.exemption_floor ({self.exemption_floor}) must be at most "
+                f"blocking.similarity_threshold ({self.similarity_threshold})"
+            )
+            raise ValueError(message)
+        return self
 
 
 class ChunkingConfig(BaseStrictModel):

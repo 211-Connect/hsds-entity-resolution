@@ -4,6 +4,9 @@ A pair becomes a candidate when
 
 * its two records share at least one value of an **Informative Key** field, or
 * its embedding similarity is at or above one floor (``blocking.similarity_threshold``),
+  or
+* its similarity is at or above the optional ``blocking.exemption_floor`` and the
+  caller's **Floor Exemption** names a reason to admit it,
 
 and the caller's **Structural Exclusion**, if any, does not exclude it.
 
@@ -60,9 +63,34 @@ field of a key-sharing pair; a field it rejects does not admit the pair. It neve
 the embedding floor, and a pair can still be admitted by another shared field.
 """
 
+FloorExemption: TypeAlias = Callable[[Mapping[str, Any], Mapping[str, Any]], str | None]
+"""``(entity_a, entity_b) -> reason`` when a pair below the floor must still be admitted.
+
+For pairs the caller knows belong together whatever their similarity (two services of one
+organization). Consulted only for pairs whose similarity is in
+``[blocking.exemption_floor, blocking.similarity_threshold)``, in canonical order; a pair
+it names a reason for is admitted with the reason code ``floor_exempt:<reason>``, still
+subject to the Structural Exclusion and the per-anchor cap. ``None`` (or an empty string)
+leaves the pair out, as the floor would.
+"""
+
 EMBEDDING_FLOOR_RULE_ID = "embedding_floor"
 EMBEDDING_FLOOR_REASON_CODE = "embedding_floor"
 INFORMATIVE_KEY_RULE_PREFIX = "informative_key:"
+FLOOR_EXEMPT_RULE_ID = "floor_exempt"
+FLOOR_EXEMPT_REASON_PREFIX = "floor_exempt:"
+
+
+def floor_exempt_reason_code(reason: str) -> str:
+    """Return the candidate reason code naming why a below-floor pair was admitted.
+
+    Args:
+        reason: The reason the caller's :data:`FloorExemption` returned.
+
+    Returns:
+        For example ``"floor_exempt:same_organization_id"``.
+    """
+    return FLOOR_EXEMPT_REASON_PREFIX + reason
 
 
 def informative_key_reason_code(field: KeyField) -> str:

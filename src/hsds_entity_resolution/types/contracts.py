@@ -41,11 +41,13 @@ class GenerateCandidatesResult:
     """Output contract for candidate generation stage.
 
     ``excluded_pairs`` holds every pair a Structural Exclusion kept out, with its reason.
+    ``floor_exempt_counts`` counts the pairs only the Floor Exemption admitted, by reason.
     """
 
     candidate_pairs: pl.DataFrame
     candidate_summary: pl.DataFrame
     excluded_pairs: pl.DataFrame = field(default_factory=_empty_excluded_pairs)
+    floor_exempt_counts: dict[str, int] = field(default_factory=dict[str, int])
 
 
 @dataclass(frozen=True)
@@ -113,3 +115,4 @@ class IncrementalRunResult:
     persistence_artifact_bundle: ArtifactBundle
     judge_answers: pl.DataFrame = field(default_factory=_empty_judge_answers)
     excluded_pairs: pl.DataFrame = field(default_factory=_empty_excluded_pairs)
+    floor_exempt_counts: dict[str, int] = field(default_factory=dict[str, int])

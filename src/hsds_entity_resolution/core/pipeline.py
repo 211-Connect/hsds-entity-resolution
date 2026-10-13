@@ -10,6 +10,7 @@ import polars as pl
 
 from hsds_entity_resolution.config import EntityResolutionRunConfig
 from hsds_entity_resolution.core.admission import (
+    FloorExemption,
     InformativeKeyTable,
     KeyCorroboration,
     KeyValueFilter,
@@ -95,6 +96,7 @@ def run_incremental(
     structural_exclusion: StructuralExclusion | None = None,
     key_value_filter: KeyValueFilter | None = None,
     key_corroboration: KeyCorroboration | None = None,
+    floor_exemption: FloorExemption | None = None,
 ) -> IncrementalRunResult:
     """Run all incremental stages and return typed artifacts for downstream consumers.
 
@@ -104,11 +106,12 @@ def run_incremental(
     Source Profile text the judge reads for records from it; schemas without an entry
     get an empty slot. Without a judge, outputs are exactly as before.
 
-    ``informative_keys``, ``structural_exclusion``, ``key_value_filter`` and
-    ``key_corroboration`` drive candidate
+    ``informative_keys``, ``structural_exclusion``, ``key_value_filter``,
+    ``key_corroboration`` and ``floor_exemption`` drive candidate
     admission (see :mod:`hsds_entity_resolution.core.admission`); without them every key
-    field is informative, every key value counts and nothing is excluded. Excluded pairs are
-    returned as ``excluded_pairs``.
+    field is informative, every key value counts, nothing is excluded and nothing below
+    the floor is admitted by similarity. Excluded pairs are returned as ``excluded_pairs``
+    and the pairs only the floor exemption admitted are counted in ``floor_exempt_counts``.
     """
     _log = logging.getLogger(__name__)
     logger = progress_logger or IncrementalProgressLogger(
@@ -157,6 +160,7 @@ def run_incremental(
         structural_exclusion=structural_exclusion,
         key_value_filter=key_value_filter,
         key_corroboration=key_corroboration,
+        floor_exemption=floor_exemption,
     )
     logger.stage_completed(
         stage="generate_candidates",
@@ -338,6 +342,7 @@ def run_incremental(
         persistence_artifact_bundle=persistence.persistence_artifact_bundle,
         judge_answers=judge_answers,
         excluded_pairs=candidates.excluded_pairs,
+        floor_exempt_counts=candidates.floor_exempt_counts,
     )
 
 
@@ -356,10 +361,12 @@ def run_incremental_until_candidates(
     structural_exclusion: StructuralExclusion | None = None,
     key_value_filter: KeyValueFilter | None = None,
     key_corroboration: KeyCorroboration | None = None,
+    floor_exemption: FloorExemption | None = None,
 ) -> CandidatesCheckpointResult:
     """Run pipeline through candidate generation only.
 
-    ``informative_keys`` and ``structural_exclusion`` drive admission as in
+    ``informative_keys``, ``structural_exclusion``, ``key_value_filter``,
+    ``key_corroboration`` and ``floor_exemption`` drive admission as in
     :func:`run_incremental`.
 
     Returns a :class:`CandidatesCheckpointResult` that can be serialized to
@@ -411,6 +418,7 @@ def run_incremental_until_candidates(
         structural_exclusion=structural_exclusion,
         key_value_filter=key_value_filter,
         key_corroboration=key_corroboration,
+        floor_exemption=floor_exemption,
     )
     logger.stage_completed(
         stage="generate_candidates",
@@ -634,6 +642,7 @@ def run_incremental_after_scored(
         run_summary=run_summary,
         persistence_artifact_bundle=persistence.persistence_artifact_bundle,
         excluded_pairs=candidates.excluded_pairs,
+        floor_exempt_counts=candidates.floor_exempt_counts,
     )
 
 
