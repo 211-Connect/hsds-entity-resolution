@@ -1,7 +1,8 @@
 """The open state schema a Pair Judge reads for one candidate pair.
 
 The state carries both records as structured HSDS text, the facts code already
-computed (how the two records' sites compare, optionally the prior score as a named
+computed (how the two records' sites compare, which record was assured more recently,
+whether the ids link their organizations, optionally the prior score as a named
 bucket), and one free-text Source Profile slot per side. It deliberately carries nothing numeric
 that code could have compared: phones are digit strings for reading, not for the
 model to match, and the site comparison arrives as a word.
@@ -18,8 +19,22 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from hsds_entity_resolution.judge.evidence import (
+    AssuranceRecency,
+    IdentifierState,
+    OrganizationLink,
+    ScheduleState,
+    ServiceAreaState,
+    assured_on,
+    compare_assurance,
+    identifiers,
+    link_organizations,
+    schedules,
+    service_areas,
+)
 from hsds_entity_resolution.normalize import (
     normalize_address_component,
+    normalize_email,
     normalize_phone,
     normalize_postal_code,
     normalize_url,
@@ -59,7 +74,11 @@ class SiteState:
 
 @dataclass(frozen=True)
 class RecordState:
-    """One side of a pair: the HSDS text a person would read to compare it."""
+    """One side of a pair: the HSDS text a person would read to compare it.
+
+    The fields after ``organization_description`` (2.4.0) come from optional input
+    columns and are empty when a caller does not supply them.
+    """
 
     name: str
     alternate_name: str
@@ -74,6 +93,12 @@ class RecordState:
     websites: tuple[str, ...]
     organization_name: str
     organization_description: str
+    emails: tuple[str, ...] = ()
+    identifiers: tuple[IdentifierState, ...] = ()
+    assured_date: str = ""
+    assurer_email: str = ""
+    service_areas: tuple[ServiceAreaState, ...] = ()
+    schedules: tuple[ScheduleState, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -88,16 +113,20 @@ class PairState:
     prior_score: PriorScoreBucket | None
     source_profile_a: str
     source_profile_b: str
+    assurance_recency: AssuranceRecency | None = None
+    organization_link: OrganizationLink | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return the state as JSON-ready nested dicts and lists.
 
         ``prior_score`` is left out when ``None``, so a caller that does not want the
-        judge anchored on the previous matcher sends no trace of it.
+        judge anchored on the previous matcher sends no trace of it. So are
+        ``assurance_recency`` and ``organization_link`` when there is nothing to say.
         """
         payload = asdict(self)
-        if self.prior_score is None:
-            del payload["prior_score"]
+        for key in ("prior_score", "assurance_recency", "organization_link"):
+            if payload[key] is None:
+                del payload[key]
         return payload
 
     def estimated_tokens(self) -> int:
@@ -163,6 +192,8 @@ def build_pair_state(
         prior_score=None if pair_outcome is None else prior_score_bucket(pair_outcome),
         source_profile_a=source_profile_a,
         source_profile_b=source_profile_b,
+        assurance_recency=compare_assurance(record_a.assured_date, record_b.assured_date),
+        organization_link=link_organizations(entity_type, entity_a, entity_b),
     )
 
 
@@ -170,7 +201,9 @@ def build_record_state(entity: Mapping[str, Any]) -> RecordState:
     """Build one side's state from a clean entity row.
 
     Display-cased name and description are preferred over the lowercased matching
-    copies when present.
+    copies when present. ``emails``, ``identifiers``, ``assured_date``,
+    ``assurer_email``, ``service_areas`` and ``schedules`` are optional columns; see
+    :mod:`hsds_entity_resolution.judge.evidence` for how each is read.
 
     Args:
         entity: Clean entity row.
@@ -192,6 +225,12 @@ def build_record_state(entity: Mapping[str, Any]) -> RecordState:
         websites=_unique(normalize_url(value) for value in _strings(entity.get("websites"))),
         organization_name=_text(entity.get("organization_name")),
         organization_description=_text(entity.get("organization_description")),
+        emails=_unique(normalize_email(value) for value in _strings(entity.get("emails"))),
+        identifiers=identifiers(entity.get("identifiers")),
+        assured_date=assured_on(entity.get("assured_date")),
+        assurer_email=normalize_email(_text(entity.get("assurer_email"))),
+        service_areas=service_areas(entity.get("service_areas")),
+        schedules=schedules(entity.get("schedules")),
     )
 
 

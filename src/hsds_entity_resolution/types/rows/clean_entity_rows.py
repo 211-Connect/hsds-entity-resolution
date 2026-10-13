@@ -43,6 +43,10 @@ class RawEntityRowInput(TypedDict, total=False):
     assured_date: object
     assurer_email: object
     original_id: object
+    # Judge-only evidence (2.4.0), all optional.
+    parent_organization_id: object
+    service_areas: object
+    schedules: object
 
 
 class CleanPayloadValues(TypedDict):
@@ -83,3 +87,6 @@ class CleanEntityRow(CleanPayloadValues):
     assurer_email: str | None
     original_id: str | None
     organization_original_id: str | None
+    parent_organization_id: str | None
+    service_areas: list[JsonObject]
+    schedules: list[JsonObject]

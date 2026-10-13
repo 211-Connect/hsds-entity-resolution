@@ -101,6 +101,15 @@ Optional passthrough columns (`display_name`, `display_description`, `alternate_
 `services_rollup`) are forwarded unchanged to the normalized entity cache and
 persistence artifacts.
 
+Optional judge evidence columns (2.4.0) are passed through, never scored or hashed, and
+read only by the Pair Judge state:
+
+| Column | Type | Description |
+|---|---|---|
+| `service_areas` | `list[{"level": str, "place": str}]` | Structured extent: `level` is `national`, `state`, `county`, `city` or `postal_code` (`zip`, `zip_code` accepted); `place` names it, e.g. `"Cook County, IL"`, `"60601"`. Derive both from structured extent, not from the area's free-text name |
+| `schedules` | `list[{"description": str, "scope": "service" \| "location"}]` | One canonical English text per schedule; `scope` says whether it hangs on the service or on a service-at-location |
+| `parent_organization_id` | `str` | HSDS `organization.parent_organization_id`, on organization rows |
+
 ### `previous_entity_index`
 
 The `normalized_organization` or `normalized_service` output from the *previous* run of this
@@ -225,9 +234,22 @@ The engine fixes what a judge reads and what it answers; it ships no questions o
 - `hsds_entity_resolution.judge.PairState`: both records as HSDS text (name, alternate
   name, description, short description, eligibility, fees, application process,
   taxonomy names, sites, phones as digits, websites, organization name and
-  description), a code-computed site comparison word (`same address`, `same city`,
-  `different`, `unknown`), the prior score as a bucket in words, and one free-text
-  `source_profile` slot per side. The engine fills the HSDS fields and leaves the
+  description, and from 2.4.0 emails, organization identifiers, assurance date and
+  assurer, service areas and schedules), a code-computed site comparison word
+  (`same address`, `same city`, `different`, `unknown`), the prior score as a bucket
+  in words, and one free-text `source_profile` slot per side. Two more facts are
+  computed in code and sent as sentences, each left out when there is nothing to say:
+  `assurance_recency` names the more recently assured record, so the other may be
+  outdated, and says outright that assurance dates are not evidence of whether the
+  records match; `organization_link` names a shared organization record (services
+  with the same `organization_id`) or a parent (organizations, via
+  `parent_organization_id`).
+- Record evidence (2.4.0). `service_areas` lists `{level, places, omitted}` coarsest
+  first, at most `MAX_PLACES_PER_LEVEL` (25) places per level; a `national` row naming
+  only the country ("USA") is dropped when the record lists a narrower area, and an
+  empty list means the area is unknown. `schedules` lists `{scope, text,
+  low_information}`; text that names no hours ("Same as site hours", "Varies", "Call
+  for hours") is marked `low_information`. `identifiers` lists `{type, identifier}`. The engine fills the HSDS fields and leaves the
   profile slots empty unless you pass `source_profiles={source_schema: text}`.
 - `hsds_entity_resolution.judge.PairAnswers`: `same_site`, `same_offering`,
   `physically_delivered` (probabilities; the last two are null for organization
@@ -316,6 +338,12 @@ migration message.
   returns `None` when the relation was not asked. Service pairs no longer require
   `same_offering` and `physically_delivered`. Code that reads the answers must handle
   `None`.
+- **Judge evidence (2.4.0).** `RecordState` gains `emails`, `identifiers`,
+  `assured_date`, `assurer_email`, `service_areas` and `schedules`; `PairState` gains
+  `assurance_recency` and `organization_link`. All default to empty, and the input
+  columns behind them are optional, so existing callers keep working. A state's
+  serialised form gains the new keys, so anything that fingerprints the state changes
+  once for every record.
 - **Logging.** Core modules log through `logging.getLogger("hsds_entity_resolution...")`
   instead of Dagster's logger. Add `hsds_entity_resolution` to your Dagster
   `python_logs.managed_python_loggers` to see them in the Dagster UI.

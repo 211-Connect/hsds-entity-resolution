@@ -51,6 +51,10 @@ CLEAN_ENTITY_SCHEMA: dict[str, Any] = {
     "assured_date": pl.String,
     "assurer_email": pl.String,
     "original_id": pl.String,
+    # Judge-only evidence (2.4.0): read by the Pair Judge state, never scored or hashed.
+    "parent_organization_id": pl.String,
+    "service_areas": pl.Object,
+    "schedules": pl.Object,
 }
 
 ENTITY_INDEX_SCHEMA: dict[str, Any] = {
